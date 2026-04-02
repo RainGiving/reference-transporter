@@ -1,0 +1,25 @@
+[project]
+name = "reference-transporter"
+version = "0.1.0"
+description = "Import reference lists into Zotero and sync plain-text DOCX citations into Zotero Word fields."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "python-docx>=1.2.0",
+  "lxml>=5.0.0",
+  "requests>=2.31.0",
+]
+
+[project.scripts]
+reference-transporter = "zwb.cli:main"
+refsync = "zwb.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

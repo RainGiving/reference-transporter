@@ -1,0 +1,7 @@
+interface:
+  display_name: "参考文献转运使"
+  short_description: "Import reference lists into Zotero and sync DOCX numeric citations into Zotero fields."
+  default_prompt: "Use $reference-transporter to import a reference list into Zotero or convert plain numeric citations in a DOCX manuscript into Zotero fields."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+failure_ref.txt
+*_report.json
+*_zotero*.docx
+
+thesis_v4.1.docx
+*.docx
+
+.DS_Store
+Thumbs.db

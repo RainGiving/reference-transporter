@@ -1,5 +1,6 @@
 __all__ = [
     "config",
+    "grobid",
     "models",
     "openalex",
     "word",

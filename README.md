@@ -32,6 +32,7 @@ This skill bridges that gap without manual Zotero re-entry.
   - arXiv ID
   - ISBN
   - URL metadata
+- GROBID-first reference parsing when a local GROBID service is available
 - Multi-source academic lookup:
   - Journal articles: Crossref -> PubMed -> OpenAlex
   - Conference papers: DBLP -> Crossref -> OpenAlex
@@ -103,6 +104,7 @@ reference-transporter/
 ## Runtime Requirements
 
 - Zotero 7 running locally
+- Optional but recommended: a local GROBID service at `http://127.0.0.1:8070`
 - Zotero local API and connector available:
   - `http://127.0.0.1:23119/api`
   - `http://127.0.0.1:23119/connector`

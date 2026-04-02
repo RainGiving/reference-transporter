@@ -22,6 +22,7 @@
   - arXiv ID
   - ISBN
   - URL metadata
+- 如果本机可用，优先使用 GROBID 解析参考文献
 - 多源学术元数据解析：
   - 期刊：Crossref -> PubMed -> OpenAlex
   - 会议：DBLP -> Crossref -> OpenAlex
@@ -93,6 +94,7 @@ reference-transporter/
 ## 运行要求
 
 - 本机运行中的 Zotero 7
+- 可选但推荐：本机运行中的 GROBID 服务，默认 `http://127.0.0.1:8070`
 - 已启用 Zotero local API 和 connector：
   - `http://127.0.0.1:23119/api`
   - `http://127.0.0.1:23119/connector`

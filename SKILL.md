@@ -14,6 +14,7 @@ Use this skill when:
 ## Preconditions
 
 - Zotero is running locally
+- A local GROBID service is recommended when available
 - Zotero local API and connector are available:
   - `http://127.0.0.1:23119/api`
   - `http://127.0.0.1:23119/connector`
@@ -85,6 +86,7 @@ Do not force a hard-coded citation style unless the user explicitly asks for one
   - arXiv ID
   - ISBN
   - URL metadata
+- Use GROBID as the primary reference parser when the service is available.
 - High-confidence metadata matches are imported automatically.
 - Low-confidence or unresolved references must fall back to parsed text items.
 - Every fallback reference must be appended to `failure_ref.txt`.

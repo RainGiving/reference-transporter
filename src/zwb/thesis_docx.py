@@ -13,6 +13,7 @@ import requests
 from docx import Document
 from lxml import etree
 
+from .grobid import GrobidClient, GrobidParsedReference
 from .metadata_resolver import MetadataResolution, MetadataResolver, extract_identifiers
 from .utils import clean_whitespace, normalize_doi, random_id
 from .word import WordZoteroInjector
@@ -22,9 +23,9 @@ XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 CP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/custom-properties"
 VT_NS = "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
 
-CITATION_TOKEN_RE = re.compile(r"\[(\d+(?:\s*[-–,，]\s*\d+)*)\]")
-REFERENCE_RE = re.compile(r"^\[(\d+)\]\s*(.+?)\s*$")
-TYPE_RE = re.compile(r"^(?P<authors>.+?)\.\s+(?P<title>.+?)\[(?P<rtype>[A-Z/]+)\](?P<rest>.*)$")
+CITATION_TOKEN_RE = re.compile(r"\[([1-9]\d*(?:\s*[-–,，]\s*[1-9]\d*)*)\]")
+REFERENCE_RE = re.compile(r"^\[([1-9]\d*)\]\s*(.+?)\s*$")
+TYPE_MARKER_RE = re.compile(r"\[([A-Z/]+)\]")
 INITIAL_TOKEN_RE = re.compile(r"^[A-Z](?:-[A-Z])?$")
 TITLE_NORMALIZER_RE = re.compile(r"[^a-z0-9]+")
 
@@ -33,9 +34,9 @@ TITLE_NORMALIZER_RE = re.compile(r"[^a-z0-9]+")
 class ParsedReference:
     number: int
     raw: str
+    body: str
     authors_raw: str
     title: str
-    ref_type_code: str
     item_type: str
     creators: list[dict]
     fields: dict
@@ -46,6 +47,7 @@ class ParsedReference:
     used_fallback: bool = False
     failure_reason: str | None = None
     created_new_item: bool = False
+    parser_source: str = "fallback"
 
 
 def normalize_title(value: str) -> str:
@@ -169,10 +171,22 @@ def _extract_docx_zotero_document_data(files: dict[str, bytes]) -> dict | None:
 
 
 def _find_zotero_prefs_js() -> Path | None:
-    base = Path.home() / "AppData/Roaming/Zotero/Zotero/Profiles"
-    if not base.exists():
-        return None
-    prefs_files = [profile / "prefs.js" for profile in base.iterdir() if (profile / "prefs.js").exists()]
+    candidates = [
+        Path.home() / "AppData/Roaming/Zotero/Zotero/Profiles",
+        Path.home() / "Library/Application Support/Zotero/Profiles",
+        Path.home() / ".zotero/zotero",
+        Path.home() / ".var/app/org.zotero.Zotero/data/zotero",
+    ]
+    prefs_files: list[Path] = []
+    for base in candidates:
+        if not base.exists():
+            continue
+        if base.name == "zotero":
+            prefs_files.extend(base.glob("*.default*/prefs.js"))
+            prefs_files.extend(base.glob("*.default-release/prefs.js"))
+            prefs_files.extend(base.glob("*/prefs.js"))
+        else:
+            prefs_files.extend((profile / "prefs.js" for profile in base.iterdir() if (profile / "prefs.js").exists()))
     if not prefs_files:
         return None
     return max(prefs_files, key=lambda p: p.stat().st_mtime)
@@ -213,37 +227,17 @@ def parse_reference(raw_reference: str) -> ParsedReference:
     number = int(outer.group(1))
     body = outer.group(2).strip()
     body = body.replace("\xa0", " ")
-    match = TYPE_RE.match(body)
-    if not match:
-        raise ValueError(f"Unsupported reference format: {raw_reference}")
-
-    authors_raw = clean_whitespace(match.group("authors"))
-    title = clean_whitespace(match.group("title"))
-    ref_type_code = match.group("rtype")
-    rest = clean_whitespace(match.group("rest").lstrip(". "))
-    creators = parse_creators(authors_raw)
-
-    if ref_type_code == "J":
-        item_type = "journalArticle"
-        fields = parse_journal_fields(rest)
-    elif ref_type_code == "C":
-        item_type = "conferencePaper"
-        fields = parse_conference_fields(rest)
-    elif ref_type_code == "EB/OL":
-        item_type, fields = parse_online_fields(title, rest)
-    else:
-        raise ValueError(f"Unsupported reference type: {ref_type_code}")
-
-    fields["title"] = title
+    fallback = fallback_parse_reference_body(body)
     return ParsedReference(
         number=number,
         raw=raw_reference,
-        authors_raw=authors_raw,
-        title=title,
-        ref_type_code=ref_type_code,
-        item_type=item_type,
-        creators=creators,
-        fields=fields,
+        body=body,
+        authors_raw=fallback["authors_raw"],
+        title=fallback["title"],
+        item_type=fallback["item_type"],
+        creators=fallback["creators"],
+        fields=fallback["fields"],
+        parser_source="fallback",
     )
 
 
@@ -309,16 +303,20 @@ def parse_conference_fields(rest: str) -> dict:
     else:
         book_title, meta = tail, ""
     book_title = book_title.rstrip(".")
-    year_match = re.search(r",\s*(\d{4})(?:,\s*(.+))?$", meta)
+    year_match = re.search(r"(?:^|,\s*)(\d{4})(?:,\s*(.+)|:\s*(.+))?$", meta)
     place = ""
     year = ""
     vol_issue_pages = ""
+    colon_pages = ""
     if year_match:
         year = year_match.group(1)
-        place = clean_whitespace(meta[: year_match.start()])
-        vol_issue_pages = clean_whitespace(year_match.group(2))
+        place = clean_whitespace(meta[: year_match.start()].rstrip(","))
+        vol_issue_pages = clean_whitespace(year_match.group(2) or "")
+        colon_pages = clean_whitespace(year_match.group(3) or "")
     volume = ""
     pages = ""
+    if colon_pages:
+        pages = colon_pages.rstrip(".")
     if vol_issue_pages:
         if ":" in vol_issue_pages:
             volume, pages = [clean_whitespace(x) for x in vol_issue_pages.split(":", 1)]
@@ -363,58 +361,117 @@ def parse_online_fields(title: str, rest: str) -> tuple[str, dict]:
     )
 
 
-def maybe_enrich_with_crossref(parsed: ParsedReference, client: requests.Session) -> None:
-    if parsed.item_type != "journalArticle":
-        return
-    query = f"{parsed.title}. {parsed.fields.get('publicationTitle', '')}. {parsed.fields.get('date', '')}."
-    try:
-        response = client.get(
-            "https://api.crossref.org/works",
-            params={"query.bibliographic": query, "rows": 5, "mailto": "yuqing@example.com"},
-            timeout=20,
-        )
-        response.raise_for_status()
-    except Exception:
-        return
+def infer_item_type(body: str, identifiers: dict[str, str], title: str = "", fields: dict | None = None, type_hint: str | None = None) -> str:
+    fields = fields or {}
+    lowered = body.lower()
+    if type_hint == "M":
+        return "book"
+    if type_hint == "D":
+        return "thesis"
+    if type_hint == "R":
+        return "report"
+    if type_hint == "S":
+        return "report"
+    if type_hint == "P":
+        return "patent"
+    if identifiers.get("arXiv"):
+        return "preprint"
+    if identifiers.get("ISBN"):
+        return "book"
+    if fields.get("publicationTitle"):
+        return "journalArticle"
+    if any(keyword in lowered for keyword in ["proceedings", "conference", "symposium", "workshop"]) or "//" in body:
+        return "conferencePaper"
+    if identifiers.get("URL") and not identifiers.get("DOI") and not fields.get("publicationTitle"):
+        return "webpage"
+    if any(keyword in lowered for keyword in ["thesis", "dissertation"]):
+        return "thesis"
+    if any(keyword in lowered for keyword in ["report", "technical report"]):
+        return "report"
+    return "journalArticle"
 
-    best = None
-    best_score = 0.0
-    expected_title = normalize_title(parsed.title)
-    expected_year = parsed.fields.get("date", "")
-    expected_author = ""
-    if parsed.creators:
-        first = parsed.creators[0]
-        expected_author = (first.get("lastName") or first.get("name") or "").lower()
 
-    for item in response.json().get("message", {}).get("items", []):
-        title = clean_whitespace((item.get("title") or [""])[0])
-        title_score = SequenceMatcher(None, expected_title, normalize_title(title)).ratio()
-        year = ""
-        for key in ("published-print", "published-online", "issued", "created"):
-            part = item.get(key, {}).get("date-parts")
-            if part and part[0]:
-                year = str(part[0][0])
-                break
-        year_score = 0.2 if year == expected_year else 0.0
-        authors = item.get("author", [])
-        author_score = 0.0
-        if authors:
-            family = authors[0].get("family", "").lower()
-            if expected_author and family == expected_author:
-                author_score = 0.1
-        score = title_score + year_score + author_score
-        if score > best_score:
-            best = item
-            best_score = score
+def fallback_parse_reference_body(body: str) -> dict:
+    identifier_obj = extract_identifiers(body)
+    identifiers = {
+        key: value
+        for key, value in {
+            "DOI": identifier_obj.doi,
+            "PMID": identifier_obj.pmid,
+            "arXiv": identifier_obj.arxiv_id,
+            "ISBN": identifier_obj.isbn,
+            "URL": identifier_obj.url,
+        }.items()
+        if value
+    }
+    type_marker = TYPE_MARKER_RE.search(body)
+    pre_marker = body[: type_marker.start()].strip() if type_marker else body
+    post_marker = body[type_marker.end() :].lstrip(". ").strip() if type_marker else ""
 
-    if best and best_score >= 1.0:
-        doi = normalize_doi(best.get("DOI"))
-        if doi:
-            parsed.fields["DOI"] = doi
-        url = best.get("URL")
-        if url:
-            parsed.fields["url"] = url
-        parsed.confidence = "crossref"
+    authors_raw = ""
+    title = clean_whitespace(pre_marker)
+    creators: list[dict] = []
+    fields: dict = {}
+
+    parts = pre_marker.split(". ", 1)
+    if len(parts) == 2:
+        authors_raw = clean_whitespace(parts[0].rstrip("."))
+        title = clean_whitespace(parts[1].rstrip("."))
+        creators = parse_creators(authors_raw)
+
+    marker = type_marker.group(1) if type_marker else None
+    if marker:
+        if marker == "J":
+            try:
+                fields.update(parse_journal_fields(post_marker))
+            except Exception:
+                pass
+        elif marker == "C":
+            try:
+                fields.update(parse_conference_fields(post_marker))
+            except Exception:
+                pass
+        elif marker == "EB/OL":
+            _, online_fields = parse_online_fields(title, post_marker)
+            fields.update(online_fields)
+        elif marker == "M":
+            years = re.findall(r"(?:19|20)\d{2}", post_marker)
+            if years:
+                fields["date"] = years[-1]
+            if identifiers.get("ISBN"):
+                fields["ISBN"] = identifiers["ISBN"]
+        elif marker == "D":
+            years = re.findall(r"(?:19|20)\d{2}", post_marker)
+            if years:
+                fields["date"] = years[-1]
+        elif marker == "R":
+            years = re.findall(r"(?:19|20)\d{2}", post_marker)
+            if years:
+                fields["date"] = years[-1]
+
+    if identifiers.get("DOI"):
+        fields["DOI"] = identifiers["DOI"]
+    if identifiers.get("URL"):
+        fields.setdefault("url", identifiers["URL"])
+    if identifiers.get("ISBN"):
+        fields.setdefault("ISBN", identifiers["ISBN"])
+    if identifiers.get("arXiv"):
+        fields["archiveID"] = identifiers["arXiv"]
+        fields["repository"] = "arXiv"
+
+    years = re.findall(r"(?:19|20)\d{2}", body)
+    if years and not fields.get("date"):
+        fields["date"] = years[-1]
+
+    fields["title"] = title
+    item_type = infer_item_type(body, identifiers, title=title, fields=fields, type_hint=marker)
+    return {
+        "authors_raw": authors_raw,
+        "title": title,
+        "creators": creators,
+        "fields": fields,
+        "item_type": item_type,
+    }
 
 
 def item_completeness_score(item_data: dict) -> float:
@@ -440,6 +497,27 @@ def item_completeness_score(item_data: dict) -> float:
     creators = item_data.get("creators", [])
     score += min(len(creators), 8) * 0.35
     return score
+
+
+def _apply_grobid_parse(reference: ParsedReference, parsed: GrobidParsedReference | None) -> None:
+    if not parsed:
+        return
+    reference.title = parsed.title or reference.title
+    reference.creators = parsed.creators or reference.creators
+    reference.authors_raw = ", ".join(
+        clean_whitespace(" ".join(x for x in [creator.get("lastName", ""), creator.get("firstName", "")] if x) or creator.get("name", ""))
+        for creator in (parsed.creators or [])
+    ).strip(", ")
+    if parsed.fields:
+        merged_fields = dict(reference.fields)
+        for key, value in parsed.fields.items():
+            if value not in (None, "", []):
+                merged_fields[key] = value
+        reference.fields = merged_fields
+    if parsed.item_type:
+        reference.item_type = parsed.item_type
+    reference.fields["title"] = reference.title
+    reference.parser_source = "grobid"
 
 
 def build_item_payload(parsed: ParsedReference, resolved: MetadataResolution | None) -> dict:
@@ -533,7 +611,11 @@ class ZoteroLocalCollection:
         self.session.headers.update({"User-Agent": "zotero-word-bridge/0.1"})
 
     def list_collections(self) -> list[dict]:
-        response = self.session.get(f"{self.api_base_url}/users/0/collections", params={"format": "json"}, timeout=30)
+        response = self.session.get(
+            f"{self.api_base_url}/users/0/collections",
+            params={"format": "json", "limit": 0},
+            timeout=30,
+        )
         response.raise_for_status()
         return response.json()
 
@@ -548,7 +630,7 @@ class ZoteroLocalCollection:
     def list_collection_items(self, collection_key: str) -> list[dict]:
         response = self.session.get(
             f"{self.api_base_url}/users/0/collections/{collection_key}/items",
-            params={"format": "json"},
+            params={"format": "json", "limit": 0},
             timeout=30,
         )
         response.raise_for_status()
@@ -622,6 +704,7 @@ def import_references_to_collection(
     connector = ZoteroConnectorClient(connector_base_url)
     local = ZoteroLocalCollection(api_base_url)
     resolver = MetadataResolver()
+    grobid = GrobidClient()
     collection_key = local.resolve_collection_key(collection_name)
     selected = connector.get_selected_collection()
     target_id = None
@@ -636,6 +719,10 @@ def import_references_to_collection(
         raise RuntimeError(f"Could not resolve connector target for collection '{collection_name}'")
 
     collection_items = local.list_collection_items(collection_key)
+    grobid_results = grobid.parse_many([reference.body for reference in references])
+    for reference, grobid_result in zip(references, grobid_results):
+        _apply_grobid_parse(reference, grobid_result)
+
     for parsed in references:
         resolution, failure_reason = resolver.resolve(parsed)
         parsed.failure_reason = failure_reason
@@ -703,6 +790,27 @@ def build_citation_code(local: ZoteroLocalCollection, item_keys: list[str]) -> t
 def copy_run_properties(source_run) -> etree._Element | None:
     rpr = source_run.find(f"{{{W_NS}}}rPr")
     return etree.fromstring(etree.tostring(rpr)) if rpr is not None else None
+
+
+def _run_text(run) -> str:
+    return "".join(run.xpath(".//w:t/text()", namespaces={"w": W_NS}))
+
+
+def _run_has_superscript(run) -> bool:
+    return bool(run.xpath("./w:rPr/w:vertAlign[@w:val='superscript']", namespaces={"w": W_NS}))
+
+
+def _select_citation_rpr(runs) -> etree._Element | None:
+    for run in runs:
+        if _run_has_superscript(run):
+            rpr = copy_run_properties(run)
+            if rpr is not None:
+                return rpr
+    for run in runs:
+        rpr = copy_run_properties(run)
+        if rpr is not None:
+            return rpr
+    return None
 
 
 def make_run(text: str | None = None, rpr: etree._Element | None = None, *, fld_char: str | None = None, instr: bool = False) -> etree._Element:
@@ -779,6 +887,91 @@ def strip_existing_zotero_citation_fields(root: etree._Element) -> None:
             i = start_index + 1
 
 
+def _replace_citations_in_paragraph(para, reference_map: dict[int, ParsedReference], local: ZoteroLocalCollection) -> None:
+    runs = para.xpath("./w:r", namespaces={"w": W_NS})
+    segments = []
+    position = 0
+    for run in runs:
+        text = _run_text(run)
+        if not text:
+            continue
+        start = position
+        end = start + len(text)
+        segments.append({"run": run, "text": text, "start": start, "end": end})
+        position = end
+
+    if not segments:
+        return
+
+    paragraph_text = "".join(segment["text"] for segment in segments)
+    matches = list(CITATION_TOKEN_RE.finditer(paragraph_text))
+    if not matches:
+        return
+
+    for match in reversed(matches):
+        token = match.group(0)
+        start = match.start()
+        end = match.end()
+        overlapping = [segment for segment in segments if segment["start"] < end and segment["end"] > start]
+        if not overlapping:
+            continue
+
+        item_keys = []
+        for number in expand_citation_numbers(token):
+            parsed = reference_map[number]
+            if not parsed.item_key:
+                raise RuntimeError(f"Reference [{number}] has no Zotero item key")
+            item_keys.append(parsed.item_key)
+
+        code_payload, _ = build_citation_code(local, item_keys)
+        field_code = f" ADDIN ZOTERO_ITEM CSL_CITATION {code_payload} "
+
+        first_segment = overlapping[0]
+        last_segment = overlapping[-1]
+        before_text = first_segment["text"][: max(0, start - first_segment["start"])]
+        after_text = last_segment["text"][max(0, end - last_segment["start"]) :]
+
+        parent = first_segment["run"].getparent()
+        insert_index = parent.index(first_segment["run"])
+        before_rpr = copy_run_properties(first_segment["run"])
+        after_rpr = copy_run_properties(last_segment["run"])
+        citation_rpr = _select_citation_rpr([segment["run"] for segment in overlapping])
+
+        for segment in overlapping:
+            if segment["run"].getparent() is parent:
+                parent.remove(segment["run"])
+
+        new_nodes = []
+        if before_text:
+            new_nodes.append(make_run(before_text, rpr=before_rpr))
+        new_nodes.extend(
+            [
+                make_run(rpr=citation_rpr, fld_char="begin"),
+                make_run(field_code, rpr=citation_rpr, instr=True),
+                make_run(rpr=citation_rpr, fld_char="separate"),
+                make_run(token, rpr=citation_rpr),
+                make_run(rpr=citation_rpr, fld_char="end"),
+            ]
+        )
+        if after_text:
+            new_nodes.append(make_run(after_text, rpr=after_rpr))
+
+        for offset, node in enumerate(new_nodes):
+            parent.insert(insert_index + offset, node)
+
+        runs = para.xpath("./w:r", namespaces={"w": W_NS})
+        segments = []
+        position = 0
+        for run in runs:
+            text = _run_text(run)
+            if not text:
+                continue
+            start = position
+            end = start + len(text)
+            segments.append({"run": run, "text": text, "start": start, "end": end})
+            position = end
+
+
 def replace_document_citations(
     input_docx: str | Path,
     output_docx: str | Path,
@@ -808,33 +1001,7 @@ def replace_document_citations(
     for para in paragraphs:
         if stop_at is not None and para is stop_at:
             break
-        runs = para.xpath("./w:r", namespaces={"w": W_NS})
-        for run in list(runs):
-            text = "".join(run.xpath(".//w:t/text()", namespaces={"w": W_NS}))
-            if not text or not CITATION_TOKEN_RE.fullmatch(text):
-                continue
-            numbers = expand_citation_numbers(text)
-            item_keys = []
-            for number in numbers:
-                parsed = reference_map[number]
-                if not parsed.item_key:
-                    raise RuntimeError(f"Reference [{number}] has no Zotero item key")
-                item_keys.append(parsed.item_key)
-            code_payload, _ = build_citation_code(local, item_keys)
-            field_code = f" ADDIN ZOTERO_ITEM CSL_CITATION {code_payload} "
-            rpr = copy_run_properties(run)
-            parent = run.getparent()
-            index = parent.index(run)
-            new_runs = [
-                make_run(rpr=rpr, fld_char="begin"),
-                make_run(field_code, rpr=rpr, instr=True),
-                make_run(rpr=rpr, fld_char="separate"),
-                make_run(text, rpr=rpr),
-                make_run(rpr=rpr, fld_char="end"),
-            ]
-            parent.remove(run)
-            for offset, new_run in enumerate(new_runs):
-                parent.insert(index + offset, new_run)
+        _replace_citations_in_paragraph(para, reference_map, local)
 
     files["word/document.xml"] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone="yes")
     document_data = injector._build_document_data(style_id=resolved_style_id, locale=resolved_locale, note_type=0)

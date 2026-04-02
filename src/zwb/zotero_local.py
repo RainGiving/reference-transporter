@@ -23,7 +23,7 @@ class ZoteroLocalAPIClient:
         return f"/users/{self.user_id}"
 
     def list_items(self) -> list[dict[str, Any]]:
-        response = self._request("GET", f"{self.user_prefix}/items", params={"format": "json"})
+        response = self._request("GET", f"{self.user_prefix}/items", params={"format": "json", "limit": 0})
         return response.json()
 
     def fulltext_versions(self, since: int = 0) -> dict[str, int]:

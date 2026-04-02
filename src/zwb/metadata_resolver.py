@@ -13,7 +13,7 @@ from .utils import clean_whitespace, normalize_doi, split_name
 
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.I)
 PMID_RE = re.compile(r"\bPMID[:\s]*([0-9]{5,9})\b", re.I)
-ARXIV_RE = re.compile(r"(?:arxiv[:/ ]\s*)(\d{4}\.\d{4,5}(?:v\d+)?)|\b(\d{4}\.\d{4,5}(?:v\d+)?)\b", re.I)
+ARXIV_RE = re.compile(r"(?:arxiv[:/\s]+)(\d{4}\.\d{4,5}(?:v\d+)?)\b", re.I)
 ISBN_RE = re.compile(r"\b(?:97[89][- ]?)?\d(?:[- ]?\d){8,16}\b")
 URL_RE = re.compile(r"https?://[^\s>]+", re.I)
 TITLE_NORMALIZER_RE = re.compile(r"[^a-z0-9]+")

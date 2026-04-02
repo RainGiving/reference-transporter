@@ -4,12 +4,7 @@
 
 1. Read the plain-text reference file.
 2. Split references into normalized blocks.
-3. Parse each reference into:
-   - number
-   - authors
-   - title
-   - type code
-   - basic fields
+3. Parse each reference with GROBID as the primary parser.
 4. Extract identifiers:
    - DOI
    - PMID
@@ -18,7 +13,7 @@
    - URL
 5. Resolve metadata with source-specific priority.
 6. Accept only high-confidence matches.
-7. Fallback to text-parsed Zotero item if no high-confidence source exists.
+7. Fallback to a minimal raw-reference item if no high-confidence source exists.
 8. Import into the requested Zotero collection.
 9. Write report and `failure_ref.txt`.
 

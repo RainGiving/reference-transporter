@@ -22,10 +22,13 @@ Most AI-assisted literature workflows produce:
 - a DOCX manuscript with visible numeric citations such as `[12]` or `[14,15]`,
 - and no Zotero-native citation objects.
 
-This skill bridges that gap without manual Zotero re-entry.
+This skill bridges that gap without manual Zotero re-entry and without assuming that references follow GB/T 7714 or any other single citation format.
 
 ## Features
 
+- GROBID-first reference parsing:
+  - no hard-coded GB/T 7714 parsing path
+  - no dependence on `[J]`, `[C]`, `[M]`, `[EB/OL]` as the primary parser
 - Identifier-first metadata resolution:
   - DOI
   - PMID
@@ -104,7 +107,7 @@ reference-transporter/
 ## Runtime Requirements
 
 - Zotero 7 running locally
-- Optional but recommended: a local GROBID service at `http://127.0.0.1:8070`
+- A local GROBID service at `http://127.0.0.1:8070`
 - Zotero local API and connector available:
   - `http://127.0.0.1:23119/api`
   - `http://127.0.0.1:23119/connector`
@@ -119,6 +122,8 @@ Install dependencies:
 ```bash
 python -m pip install requests lxml python-docx
 ```
+
+Reference Transporter requires a running GROBID service for reference parsing. It no longer falls back to a GB/T-specific local parser.
 
 ## Commands
 

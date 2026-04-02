@@ -2,6 +2,8 @@
 
 ## Strong Identifier Priority
 
+Reference structure should come from GROBID first. Local regex parsing is not the primary source of structure in this version.
+
 Resolve in this order when available:
 
 1. DOI

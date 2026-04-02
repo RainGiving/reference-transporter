@@ -120,6 +120,28 @@ def _score_candidate(parsed, title: str, year: str | int | None, authors: list[s
     return score
 
 
+def _search_query(parsed) -> str:
+    pieces = []
+    title = clean_whitespace(parsed.title or "")
+    if title:
+        pieces.append(title)
+    elif getattr(parsed, "body", ""):
+        pieces.append(clean_whitespace(parsed.body))
+    first_author = _first_author_last_name(parsed.creators)
+    if first_author:
+        pieces.append(first_author)
+    year = clean_whitespace(str(parsed.fields.get("date", "")))
+    if year:
+        pieces.append(year)
+    return " ".join(piece for piece in pieces if piece)
+
+
+def _normalize_item_type(item_type: str | None) -> str:
+    if item_type in {"journalArticle", "conferencePaper", "preprint", "webpage", "book", "thesis", "report", "patent"}:
+        return item_type
+    return "unknown"
+
+
 def _ratio(left: str, right: str) -> float:
     if not left or not right:
         return 0.0
@@ -140,6 +162,7 @@ class MetadataResolver:
         self.session.headers.update({"User-Agent": "zotero-word-bridge/0.2"})
 
     def resolve(self, parsed) -> tuple[MetadataResolution | None, str | None]:
+        parsed.item_type = _normalize_item_type(getattr(parsed, "item_type", None))
         ids = extract_identifiers(parsed.raw)
         attempted: list[str] = []
         candidates: list[MetadataResolution] = []
@@ -199,6 +222,12 @@ class MetadataResolver:
                 search_chain = [lambda p: self._url_metadata(p, ids.url)]
             else:
                 search_chain = [self._openalex_search]
+        else:
+            if ids.url and not ids.doi and not ids.arxiv_id:
+                search_chain.append(lambda p: self._url_metadata(p, ids.url))
+            if ids.arxiv_id:
+                search_chain.append(self._arxiv_search)
+            search_chain.extend([self._crossref_search, self._pubmed_search, self._openalex_search, self._dblp_search])
 
         for resolver in search_chain:
             try:
@@ -225,7 +254,7 @@ class MetadataResolver:
         return MetadataResolution(source="crossref-doi", score=max(score, 1.5), item=item, identifiers=ids)
 
     def _crossref_search(self, parsed) -> MetadataResolution | None:
-        query = " ".join(x for x in [parsed.title, _first_author_last_name(parsed.creators), parsed.fields.get("date", "")] if x)
+        query = _search_query(parsed)
         response = self.session.get(
             "https://api.crossref.org/works",
             params={"query.bibliographic": query, "rows": 8, "mailto": self.mailto},
@@ -253,7 +282,7 @@ class MetadataResolver:
         return MetadataResolution(source="pubmed-pmid", score=max(score, 1.5), item=item, identifiers=ids)
 
     def _pubmed_search(self, parsed) -> MetadataResolution | None:
-        term = f'{parsed.title}[Title]'
+        term = f'{clean_whitespace(parsed.title or parsed.body)}[Title]'
         response = self.session.get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
             params={"db": "pubmed", "term": term, "retmode": "json", "retmax": 5},
@@ -274,7 +303,7 @@ class MetadataResolver:
         return best
 
     def _openalex_search(self, parsed) -> MetadataResolution | None:
-        query = " ".join(x for x in [parsed.title, _first_author_last_name(parsed.creators), parsed.fields.get("date", "")] if x)
+        query = _search_query(parsed)
         response = self.session.get(
             "https://api.openalex.org/works",
             params={"search": query, "per-page": 5, "mailto": self.mailto},
@@ -294,7 +323,7 @@ class MetadataResolver:
         return best
 
     def _dblp_search(self, parsed) -> MetadataResolution | None:
-        query = " ".join(x for x in [parsed.title, _first_author_last_name(parsed.creators), parsed.fields.get("date", "")] if x)
+        query = _search_query(parsed)
         response = self.session.get(
             "https://dblp.org/search/publ/api",
             params={"q": query, "format": "json", "h": 10},
@@ -454,6 +483,7 @@ class MetadataResolver:
         return [v for v in values if v]
 
     def _crossref_to_item(self, message: dict[str, Any], preferred_type: str) -> dict[str, Any]:
+        preferred_type = _normalize_item_type(preferred_type)
         authors = []
         for author in message.get("author", []):
             given = clean_whitespace(author.get("given", ""))
@@ -475,6 +505,8 @@ class MetadataResolver:
         container = strip_markup((message.get("container-title") or [""])[0])
         short_container = clean_whitespace((message.get("short-container-title") or [""])[0])
         item_type = preferred_type
+        if item_type == "unknown":
+            item_type = "conferencePaper" if message.get("type") in {"proceedings-article", "journal-issue"} or message.get("event") else "journalArticle"
         item = {
             "itemType": item_type,
             "title": title,
@@ -563,6 +595,7 @@ class MetadataResolver:
         }
 
     def _openalex_to_item(self, result: dict[str, Any], preferred_type: str) -> dict[str, Any]:
+        preferred_type = _normalize_item_type(preferred_type)
         authors = []
         for authorship in result.get("authorships", []):
             display_name = clean_whitespace(authorship.get("author", {}).get("display_name", ""))
@@ -575,8 +608,9 @@ class MetadataResolver:
         biblio = result.get("biblio") or {}
         source = (result.get("primary_location") or {}).get("source") or {}
         title = clean_whitespace(result.get("display_name", ""))
+        item_type = preferred_type if preferred_type != "unknown" else ("conferencePaper" if (result.get("type") or "").lower() == "proceedings-article" else "journalArticle")
         item = {
-            "itemType": preferred_type,
+            "itemType": item_type,
             "title": title,
             "creators": authors,
             "date": str(result.get("publication_year") or ""),
@@ -584,7 +618,7 @@ class MetadataResolver:
             "url": result.get("doi") or result.get("id") or "",
         }
         pages = "-".join(x for x in [clean_whitespace(biblio.get("first_page", "")), clean_whitespace(biblio.get("last_page", ""))] if x)
-        if preferred_type == "conferencePaper":
+        if item_type == "conferencePaper":
             container = clean_whitespace(source.get("display_name", ""))
             item.update({"proceedingsTitle": container, "conferenceName": container, "pages": pages, "volume": clean_whitespace(biblio.get("volume", ""))})
         else:

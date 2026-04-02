@@ -11,10 +11,12 @@ Use this skill when:
 - a DOCX manuscript contains visible numeric citations like `[12]` instead of Zotero fields,
 - or an AI-revised manuscript needs Zotero citation field synchronization rebuilt.
 
+This skill does not assume that references follow GB/T 7714 or any other single citation format.
+
 ## Preconditions
 
 - Zotero is running locally
-- A local GROBID service is recommended when available
+- A local GROBID service is required
 - Zotero local API and connector are available:
   - `http://127.0.0.1:23119/api`
   - `http://127.0.0.1:23119/connector`
@@ -80,13 +82,14 @@ Do not force a hard-coded citation style unless the user explicitly asks for one
 
 ## Resolution Rules
 
+- Use GROBID as the primary reference parser.
+- Do not rely on `[J]`, `[C]`, `[M]`, `[EB/OL]`, or any GB/T-specific local parsing as the main path.
 - Strong identifiers first:
   - DOI
   - PMID
   - arXiv ID
   - ISBN
   - URL metadata
-- Use GROBID as the primary reference parser when the service is available.
 - High-confidence metadata matches are imported automatically.
 - Low-confidence or unresolved references must fall back to parsed text items.
 - Every fallback reference must be appended to `failure_ref.txt`.

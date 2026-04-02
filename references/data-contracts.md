@@ -2,6 +2,8 @@
 
 ## Reference Text File Input
 
+The parser does not assume a specific house style such as GB/T 7714. Structured extraction is delegated to GROBID.
+
 Accepted forms:
 
 1. Each reference on its own line:

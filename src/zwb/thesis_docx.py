@@ -25,8 +25,6 @@ VT_NS = "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
 
 CITATION_TOKEN_RE = re.compile(r"\[([1-9]\d*(?:\s*[-–,，]\s*[1-9]\d*)*)\]")
 REFERENCE_RE = re.compile(r"^\[([1-9]\d*)\]\s*(.+?)\s*$")
-TYPE_MARKER_RE = re.compile(r"\[([A-Z/]+)\]")
-INITIAL_TOKEN_RE = re.compile(r"^[A-Z](?:-[A-Z])?$")
 TITLE_NORMALIZER_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -227,7 +225,7 @@ def parse_reference(raw_reference: str) -> ParsedReference:
     number = int(outer.group(1))
     body = outer.group(2).strip()
     body = body.replace("\xa0", " ")
-    fallback = fallback_parse_reference_body(body)
+    fallback = minimal_reference_seed(body)
     return ParsedReference(
         number=number,
         raw=raw_reference,
@@ -240,236 +238,36 @@ def parse_reference(raw_reference: str) -> ParsedReference:
         parser_source="fallback",
     )
 
-
-def parse_creators(authors_raw: str) -> list[dict]:
-    parts = [clean_whitespace(part) for part in authors_raw.split(",")]
-    creators: list[dict] = []
-    for part in parts:
-        normalized = part.lower().replace(".", "").strip()
-        if not part or normalized == "et al":
-            continue
-        tokens = part.split()
-        initials: list[str] = []
-        while tokens and INITIAL_TOKEN_RE.match(tokens[-1]):
-            initials.insert(0, tokens.pop())
-        if initials and tokens:
-            creators.append(
-                {
-                    "creatorType": "author",
-                    "firstName": " ".join(initials),
-                    "lastName": " ".join(tokens),
-                }
-            )
-        else:
-            creators.append({"creatorType": "author", "name": part})
-    return creators
-
-
-def parse_journal_fields(rest: str) -> dict:
-    match = re.match(r"^(?P<journal>.+?),\s*(?P<year>\d{4}),\s*(?P<after>.+?)\.?$", rest)
-    if not match:
-        raise ValueError(f"Could not parse journal reference tail: {rest}")
-    journal = clean_whitespace(match.group("journal"))
-    year = match.group("year")
-    after = clean_whitespace(match.group("after"))
-    volume = ""
-    issue = ""
-    pages = ""
-    if ":" in after:
-        vol_issue, pages = [clean_whitespace(x) for x in after.split(":", 1)]
-    else:
-        vol_issue = after
-    issue_match = re.match(r"^(?P<vol>[^()]+?)(?:\((?P<issue>[^)]+)\))?$", vol_issue)
-    if issue_match:
-        volume = clean_whitespace(issue_match.group("vol"))
-        issue = clean_whitespace(issue_match.group("issue"))
-    else:
-        volume = vol_issue
-    return {
-        "publicationTitle": journal,
-        "date": year,
-        "volume": volume,
-        "issue": issue,
-        "pages": pages.rstrip("."),
-    }
-
-
-def parse_conference_fields(rest: str) -> dict:
-    tail = rest
-    if tail.startswith("//"):
-        tail = tail[2:].strip()
-    if ". " in tail:
-        book_title, meta = tail.split(". ", 1)
-    else:
-        book_title, meta = tail, ""
-    book_title = book_title.rstrip(".")
-    year_match = re.search(r"(?:^|,\s*)(\d{4})(?:,\s*(.+)|:\s*(.+))?$", meta)
-    place = ""
-    year = ""
-    vol_issue_pages = ""
-    colon_pages = ""
-    if year_match:
-        year = year_match.group(1)
-        place = clean_whitespace(meta[: year_match.start()].rstrip(","))
-        vol_issue_pages = clean_whitespace(year_match.group(2) or "")
-        colon_pages = clean_whitespace(year_match.group(3) or "")
-    volume = ""
-    pages = ""
-    if colon_pages:
-        pages = colon_pages.rstrip(".")
-    if vol_issue_pages:
-        if ":" in vol_issue_pages:
-            volume, pages = [clean_whitespace(x) for x in vol_issue_pages.split(":", 1)]
-        else:
-            volume = vol_issue_pages
-    return {
-        "proceedingsTitle": book_title,
-        "conferenceName": book_title,
-        "place": place.rstrip(","),
-        "date": year,
-        "volume": volume.rstrip("."),
-        "pages": pages.rstrip("."),
-    }
-
-
-def parse_online_fields(title: str, rest: str) -> tuple[str, dict]:
-    years = re.findall(r"(?:19|20)\d{2}", rest)
-    year = years[-1] if years else ""
-    url_match = re.search(r"https?://\S+", rest)
-    url = url_match.group(0).rstrip(".,") if url_match else ""
-    if "arxiv:" in rest.lower():
-        archive_id = rest.split(":", 1)[1].split(",")[0].strip()
-        return (
-            "preprint",
-            {
-                "date": year,
-                "url": f"https://arxiv.org/abs/{archive_id}",
-                "archiveID": archive_id,
-                "repository": "arXiv",
-            },
-        )
-    website_title = ""
-    if url:
-        website_title = re.sub(r"^www\.", "", requests.utils.urlparse(url).netloc)
-    return (
-        "webpage",
-        {
-            "date": year,
-            "url": url,
-            "websiteTitle": website_title,
-        },
-    )
-
-
-def infer_item_type(body: str, identifiers: dict[str, str], title: str = "", fields: dict | None = None, type_hint: str | None = None) -> str:
-    fields = fields or {}
-    lowered = body.lower()
-    if type_hint == "M":
-        return "book"
-    if type_hint == "D":
-        return "thesis"
-    if type_hint == "R":
-        return "report"
-    if type_hint == "S":
-        return "report"
-    if type_hint == "P":
-        return "patent"
-    if identifiers.get("arXiv"):
-        return "preprint"
-    if identifiers.get("ISBN"):
-        return "book"
-    if fields.get("publicationTitle"):
-        return "journalArticle"
-    if any(keyword in lowered for keyword in ["proceedings", "conference", "symposium", "workshop"]) or "//" in body:
-        return "conferencePaper"
-    if identifiers.get("URL") and not identifiers.get("DOI") and not fields.get("publicationTitle"):
-        return "webpage"
-    if any(keyword in lowered for keyword in ["thesis", "dissertation"]):
-        return "thesis"
-    if any(keyword in lowered for keyword in ["report", "technical report"]):
-        return "report"
-    return "journalArticle"
-
-
-def fallback_parse_reference_body(body: str) -> dict:
-    identifier_obj = extract_identifiers(body)
-    identifiers = {
-        key: value
-        for key, value in {
-            "DOI": identifier_obj.doi,
-            "PMID": identifier_obj.pmid,
-            "arXiv": identifier_obj.arxiv_id,
-            "ISBN": identifier_obj.isbn,
-            "URL": identifier_obj.url,
-        }.items()
-        if value
-    }
-    type_marker = TYPE_MARKER_RE.search(body)
-    pre_marker = body[: type_marker.start()].strip() if type_marker else body
-    post_marker = body[type_marker.end() :].lstrip(". ").strip() if type_marker else ""
-
-    authors_raw = ""
-    title = clean_whitespace(pre_marker)
-    creators: list[dict] = []
+def minimal_reference_seed(body: str) -> dict:
+    identifiers = extract_identifiers(body)
     fields: dict = {}
-
-    parts = pre_marker.split(". ", 1)
-    if len(parts) == 2:
-        authors_raw = clean_whitespace(parts[0].rstrip("."))
-        title = clean_whitespace(parts[1].rstrip("."))
-        creators = parse_creators(authors_raw)
-
-    marker = type_marker.group(1) if type_marker else None
-    if marker:
-        if marker == "J":
-            try:
-                fields.update(parse_journal_fields(post_marker))
-            except Exception:
-                pass
-        elif marker == "C":
-            try:
-                fields.update(parse_conference_fields(post_marker))
-            except Exception:
-                pass
-        elif marker == "EB/OL":
-            _, online_fields = parse_online_fields(title, post_marker)
-            fields.update(online_fields)
-        elif marker == "M":
-            years = re.findall(r"(?:19|20)\d{2}", post_marker)
-            if years:
-                fields["date"] = years[-1]
-            if identifiers.get("ISBN"):
-                fields["ISBN"] = identifiers["ISBN"]
-        elif marker == "D":
-            years = re.findall(r"(?:19|20)\d{2}", post_marker)
-            if years:
-                fields["date"] = years[-1]
-        elif marker == "R":
-            years = re.findall(r"(?:19|20)\d{2}", post_marker)
-            if years:
-                fields["date"] = years[-1]
-
-    if identifiers.get("DOI"):
-        fields["DOI"] = identifiers["DOI"]
-    if identifiers.get("URL"):
-        fields.setdefault("url", identifiers["URL"])
-    if identifiers.get("ISBN"):
-        fields.setdefault("ISBN", identifiers["ISBN"])
-    if identifiers.get("arXiv"):
-        fields["archiveID"] = identifiers["arXiv"]
+    if identifiers.doi:
+        fields["DOI"] = identifiers.doi
+    if identifiers.url:
+        fields["url"] = identifiers.url
+    if identifiers.isbn:
+        fields["ISBN"] = identifiers.isbn
+    if identifiers.arxiv_id:
+        fields["archiveID"] = identifiers.arxiv_id
         fields["repository"] = "arXiv"
 
     years = re.findall(r"(?:19|20)\d{2}", body)
-    if years and not fields.get("date"):
+    if years:
         fields["date"] = years[-1]
 
-    fields["title"] = title
-    item_type = infer_item_type(body, identifiers, title=title, fields=fields, type_hint=marker)
+    item_type = "unknown"
+    if identifiers.arxiv_id:
+        item_type = "preprint"
+    elif identifiers.isbn:
+        item_type = "book"
+    elif identifiers.url and not identifiers.doi:
+        item_type = "webpage"
+
     return {
-        "authors_raw": authors_raw,
-        "title": title,
-        "creators": creators,
-        "fields": fields,
+        "authors_raw": "",
+        "title": clean_whitespace(body),
+        "creators": [],
+        "fields": {"title": clean_whitespace(body), **fields},
         "item_type": item_type,
     }
 
@@ -720,6 +518,11 @@ def import_references_to_collection(
 
     collection_items = local.list_collection_items(collection_key)
     grobid_results = grobid.parse_many([reference.body for reference in references])
+    if not grobid_results or all(result is None for result in grobid_results):
+        raise RuntimeError(
+            "GROBID parsing is required for this workflow, but no references were parsed. "
+            "Start a local GROBID service and retry."
+        )
     for reference, grobid_result in zip(references, grobid_results):
         _apply_grobid_parse(reference, grobid_result)
 

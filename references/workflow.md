@@ -15,7 +15,7 @@
 6. Accept only high-confidence matches.
 7. Fallback to a minimal raw-reference item if no high-confidence source exists.
 8. Import into the requested Zotero collection.
-9. Write report and `failure_ref.txt`.
+9. Write `failure_ref.txt`.
 
 ## 2. tag-manuscript
 
@@ -32,7 +32,6 @@
 8. Write DOCX-level Zotero properties for later refresh in Word.
 8. Output:
    - tagged DOCX
-   - JSON report
    - `failure_ref.txt`
 
 ## 3. sync-manuscript
@@ -42,4 +41,4 @@
 3. Re-extract the current reference list.
 4. Re-resolve/import references.
 5. Rebuild in-text Zotero citation fields from the revised manuscript state.
-6. Output a new synced DOCX and updated reports.
+6. Output a new synced DOCX and `failure_ref.txt`.

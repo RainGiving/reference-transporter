@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 import re
 import time
-import uuid
-from dataclasses import asdict, dataclass, field
+import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -339,25 +338,8 @@ def build_item_payload(parsed: ParsedReference, resolved: MetadataResolution | N
     item.setdefault("title", parsed.title)
     item.setdefault("creators", parsed.creators)
     item.setdefault("itemType", parsed.item_type)
-
-    marker = str(uuid.uuid4())
-    source = resolved.source if resolved else "fallback-parsed"
-    ref_tag = f"zwb-ref-{parsed.number}"
-    source_tag = f"zwb-source-{source}"
-    existing_tags = [tag for tag in item.get("tags", []) if isinstance(tag, dict) and tag.get("tag")]
-    item["tags"] = existing_tags + [{"tag": "zwb-import"}, {"tag": ref_tag}, {"tag": source_tag}]
-
-    extra = clean_whitespace(item.get("extra", ""))
-    extra_lines = [line for line in extra.splitlines() if line.strip()]
-    extra_lines.extend(
-        [
-            f"ZWB Import ID: {marker}",
-            f"ZWB Ref Number: {parsed.number}",
-            f"ZWB Source: {source}",
-        ]
-    )
-    item["extra"] = "\n".join(extra_lines)
-    item["_zwb_import_id"] = marker
+    item.pop("tags", None)
+    item.pop("extra", None)
     return item
 
 
@@ -547,17 +529,13 @@ def import_references_to_collection(
             parsed.created_new_item = False
             continue
 
+        before_keys = {item["key"] for item in collection_items}
         connector.save_item(candidate_item, target=target_id)
         for _ in range(20):
             time.sleep(0.4)
             collection_items = local.list_collection_items(collection_key)
-            match = None
-            import_marker = candidate_item["_zwb_import_id"]
-            for item in collection_items:
-                extra = item["data"].get("extra", "")
-                if import_marker in extra:
-                    match = item
-                    break
+            new_items = [item for item in collection_items if item["key"] not in before_keys]
+            match = find_best_existing_item(candidate_item, new_items) if new_items else None
             if not match:
                 match = find_best_existing_item(candidate_item, collection_items)
             if match:
@@ -815,15 +793,6 @@ def replace_document_citations(
     with ZipFile(output_path, "w", compression=ZIP_DEFLATED) as target:
         for name, data in files.items():
             target.writestr(name, data)
-
-
-def write_report(references: list[ParsedReference], path: str | Path) -> None:
-    output = Path(path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps([asdict(ref) for ref in references], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
 
 
 def write_failure_refs(references: list[ParsedReference], path: str | Path) -> None:

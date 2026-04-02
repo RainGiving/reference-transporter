@@ -39,23 +39,6 @@ When unnumbered, numbering is assigned sequentially.
   - `[12,13]`
   - `[14-16]`
 
-## JSON Report Output
-
-Each reference record includes at least:
-
-- `number`
-- `raw`
-- `title`
-- `item_type`
-- `creators`
-- `fields`
-- `item_key`
-- `resolution_source`
-- `resolution_score`
-- `used_fallback`
-- `failure_reason`
-- `created_new_item`
-
 ## failure_ref.txt Output
 
 Each fallback reference records:

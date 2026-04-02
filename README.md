@@ -8,7 +8,7 @@ Language: **English** | [简体中文](./README.zh-CN.md)
 [![GROBID](https://img.shields.io/badge/grobid-required-4B8BBE)](https://github.com/kermitt2/grobid)
 [![Status](https://img.shields.io/badge/status-active-2EA44F)](./references/workflow.md)
 
-Reference Transporter imports reference lists into Zotero and converts visible numeric citations in DOCX manuscripts into Zotero Word fields. It uses **GROBID as the primary parser** and does **not** assume GB/T 7714 or any other single citation style as the input format.
+Reference Transporter imports references into Zotero and converts visible numeric citations in DOCX manuscripts into Zotero Word fields.
 
 ## One-Line Agent Install
 
@@ -30,38 +30,28 @@ Clone https://github.com/RainGiving/reference-transporter.git into ~/.claude/ski
 
 ## Quick Usage
 
-### 1. Import a Plain-Text Reference List into Zotero
+### Import a reference list into Zotero
 
-```bash
-python scripts/refsync.py import-refs \
-  --refs /abs/path/references.txt \
-  --collection "master degree"
+Send this to the agent:
+
+```text
+Use $reference-transporter to import the references in /abs/path/references.txt into the Zotero collection "master degree" and write unresolved references to failure_ref.txt.
 ```
 
-### 2. Convert a DOCX Manuscript with Plain Numeric Citations
+### Convert a DOCX manuscript with visible numeric citations
 
-```bash
-python scripts/refsync.py tag-manuscript \
-  --input /abs/path/draft.docx \
-  --collection "master degree"
+Send this to the agent:
+
+```text
+Use $reference-transporter to import the references from /abs/path/draft.docx into the Zotero collection "master degree", then replace the visible numeric citations in the manuscript with Zotero Word fields and save the result as a new DOCX.
 ```
 
-### 3. Resync a Revised DOCX Manuscript
+### Resync a revised DOCX manuscript
 
-```bash
-python scripts/refsync.py sync-manuscript \
-  --input /abs/path/revised.docx \
-  --collection "master degree"
-```
+Send this to the agent:
 
-Optional explicit style override:
-
-```bash
-python scripts/refsync.py tag-manuscript \
-  --input /abs/path/draft.docx \
-  --collection "master degree" \
-  --style-id "http://www.zotero.org/styles/ieee" \
-  --locale "en-US"
+```text
+Use $reference-transporter to resync Zotero citation fields in /abs/path/revised.docx against the Zotero collection "master degree", rebuilding the in-text citation markers after the manuscript changes.
 ```
 
 ## Runtime Requirements
@@ -107,21 +97,10 @@ python -m pip install requests lxml python-docx
 
 ## Outputs
 
-- `*_report.json`
-  - reference number
-  - metadata source
-  - confidence score
-  - final Zotero item key
-- `*failure_ref.txt`
-  - all fallback references that did not get a high-confidence metadata match
+- `failure_ref.txt`
+  - all references that did not get a high-confidence metadata match
 - `*_zotero.docx` / `*_zotero_synced.docx`
-  - manuscripts whose plain numeric citations were replaced with Zotero Word fields
-
-## Boundaries
-
-- PDF discovery is not included
-- bibliography-field replacement for the manually typed reference section is not included
-- duplicate cleanup inside Zotero collections is not enforced in this version
+  - manuscripts whose visible numeric citations were replaced with Zotero Word fields
 
 ## Repository Layout
 

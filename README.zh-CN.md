@@ -8,7 +8,7 @@
 [![GROBID](https://img.shields.io/badge/grobid-required-4B8BBE)](https://github.com/kermitt2/grobid)
 [![Status](https://img.shields.io/badge/status-active-2EA44F)](./references/workflow.md)
 
-Reference Transporter 用来把参考文献列表导入 Zotero，并把 DOCX 稿件中可见的数字编号引用替换成 Zotero Word 字段。它以 **GROBID 作为主解析器**，**不预设输入参考文献必须符合 GB/T 7714 或任何单一格式**。
+Reference Transporter 用来把参考文献导入 Zotero，并把 DOCX 稿件中可见的数字编号引用替换成 Zotero Word 字段。
 
 ## 给代理的一句话安装
 
@@ -30,38 +30,28 @@ Clone https://github.com/RainGiving/reference-transporter.git into ~/.claude/ski
 
 ## 快速使用
 
-### 1. 文本参考文献列表 -> Zotero
+### 把参考文献列表导入 Zotero
 
-```bash
-python scripts/refsync.py import-refs \
-  --refs /abs/path/references.txt \
-  --collection "master degree"
+把下面这句话直接发给代理：
+
+```text
+Use $reference-transporter to import the references in /abs/path/references.txt into the Zotero collection "master degree" and write unresolved references to failure_ref.txt.
 ```
 
-### 2. DOCX 稿件 -> Zotero 字段稿件
+### 把带可见数字编号引用的 DOCX 转成 Zotero 字段稿件
 
-```bash
-python scripts/refsync.py tag-manuscript \
-  --input /abs/path/draft.docx \
-  --collection "master degree"
+把下面这句话直接发给代理：
+
+```text
+Use $reference-transporter to import the references from /abs/path/draft.docx into the Zotero collection "master degree", then replace the visible numeric citations in the manuscript with Zotero Word fields and save the result as a new DOCX.
 ```
 
-### 3. AI 修改后的 DOCX -> 重新同步
+### 重新同步修改后的 DOCX 稿件
 
-```bash
-python scripts/refsync.py sync-manuscript \
-  --input /abs/path/revised.docx \
-  --collection "master degree"
-```
+把下面这句话直接发给代理：
 
-如果你想显式覆盖样式：
-
-```bash
-python scripts/refsync.py tag-manuscript \
-  --input /abs/path/draft.docx \
-  --collection "master degree" \
-  --style-id "http://www.zotero.org/styles/ieee" \
-  --locale "en-US"
+```text
+Use $reference-transporter to resync Zotero citation fields in /abs/path/revised.docx against the Zotero collection "master degree", rebuilding the in-text citation markers after the manuscript changes.
 ```
 
 ## 运行要求
@@ -107,18 +97,7 @@ python -m pip install requests lxml python-docx
 
 ## 输出
 
-- `*_report.json`
-  - 参考文献编号
-  - 元数据来源
-  - 置信分数
-  - 最终 Zotero item key
-- `*failure_ref.txt`
-  - 所有未获得高置信元数据的 fallback 条目
+- `failure_ref.txt`
+  - 所有未获得高置信元数据的条目
 - `*_zotero.docx` / `*_zotero_synced.docx`
   - 已替换成 Zotero Word 字段的稿件
-
-## 当前边界
-
-- 不自动找 PDF
-- 不自动把手工参考文献区替换成 Zotero bibliography 字段
-- 当前版本不强制清理 Zotero collection 中的重复条目

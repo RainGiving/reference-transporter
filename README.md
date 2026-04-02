@@ -48,6 +48,22 @@ This skill bridges that gap without manual Zotero re-entry.
 
 ## One-Line Install
 
+### One-Line Prompt for Codex
+
+Use this exact sentence with Codex:
+
+```text
+Clone https://github.com/RainGiving/reference-transporter.git into ~/.codex/skills/reference-transporter, make sure the skill is discoverable as $reference-transporter, and verify that python scripts/refsync.py --help runs successfully.
+```
+
+### One-Line Prompt for Claude Code
+
+Use this exact sentence with Claude Code:
+
+```text
+Clone https://github.com/RainGiving/reference-transporter.git into ~/.claude/skills/reference-transporter, make sure the skill is discoverable as $reference-transporter, and verify that python scripts/refsync.py --help runs successfully.
+```
+
 ### Codex
 
 ```bash

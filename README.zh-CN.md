@@ -38,6 +38,22 @@
 
 ## 一句话安装
 
+### 给 Codex 的一句话
+
+把下面这句话直接发给 Codex：
+
+```text
+Clone https://github.com/RainGiving/reference-transporter.git into ~/.codex/skills/reference-transporter, make sure the skill is discoverable as $reference-transporter, and verify that python scripts/refsync.py --help runs successfully.
+```
+
+### 给 Claude Code 的一句话
+
+把下面这句话直接发给 Claude Code：
+
+```text
+Clone https://github.com/RainGiving/reference-transporter.git into ~/.claude/skills/reference-transporter, make sure the skill is discoverable as $reference-transporter, and verify that python scripts/refsync.py --help runs successfully.
+```
+
 ### Codex
 
 ```bash

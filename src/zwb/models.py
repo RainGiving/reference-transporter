@@ -1,28 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-
-@dataclass(slots=True)
-class Author:
-    display_name: str
-    first_name: str = ""
-    last_name: str = ""
-
-
-@dataclass(slots=True)
-class LiteratureRecord:
-    title: str
-    authors: list[Author]
-    year: int | None = None
-    doi: str | None = None
-    abstract: str | None = None
-    venue: str | None = None
-    pdf_url: str | None = None
-    landing_page_url: str | None = None
-    openalex_id: str | None = None
-    cited_by_count: int | None = None
-    work_type: str | None = None
+from dataclasses import dataclass
 
 
 @dataclass(slots=True)
@@ -54,10 +32,3 @@ class SearchHit:
     file_url: str | None
     snippet: str
     score: float
-
-
-@dataclass(slots=True)
-class ZoteroImportResult:
-    created: list[str] = field(default_factory=list)
-    skipped_existing: list[str] = field(default_factory=list)
-    collection_key: str | None = None

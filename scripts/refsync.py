@@ -16,6 +16,7 @@ from zwb.thesis_docx import (  # noqa: E402
     replace_document_citations,
     extract_reference_paragraphs,
     write_failure_refs,
+    write_correction_map,
 )
 
 
@@ -27,27 +28,35 @@ def _default_failure_path(path: Path) -> Path:
     return path.with_name(f"{path.stem}_failure_ref.txt")
 
 
-def import_refs(refs_path: Path, collection: str, failure: Path) -> None:
+def _default_correction_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}_item_corrections.txt")
+
+
+def import_refs(refs_path: Path, collection: str, failure: Path, corrections: Path) -> None:
     raw_references = load_references_from_text(refs_path)
     references = [parse_reference(raw) for raw in raw_references]
     references = import_references_to_collection(references, collection_name=collection)
     write_failure_refs(references, failure)
+    write_correction_map(references, corrections)
     print(f"Imported {len(references)} references into collection '{collection}'")
     print(f"Failure refs: {failure}")
+    print(f"Correction map: {corrections}")
 
 
-def tag_manuscript(input_docx: Path, collection: str, output_docx: Path, failure: Path, style_id: str | None, locale: str | None) -> None:
+def tag_manuscript(input_docx: Path, collection: str, output_docx: Path, failure: Path, corrections: Path, style_id: str | None, locale: str | None) -> None:
     raw_references = extract_reference_paragraphs(input_docx)
     references = [parse_reference(raw) for raw in raw_references]
     references = import_references_to_collection(references, collection_name=collection)
     replace_document_citations(input_docx, output_docx, references, style_id=style_id, locale=locale)
     write_failure_refs(references, failure)
+    write_correction_map(references, corrections)
     print(f"Tagged manuscript: {output_docx}")
     print(f"Failure refs: {failure}")
+    print(f"Correction map: {corrections}")
 
 
-def sync_manuscript(input_docx: Path, collection: str, output_docx: Path, failure: Path, style_id: str | None, locale: str | None) -> None:
-    tag_manuscript(input_docx, collection, output_docx, failure, style_id, locale)
+def sync_manuscript(input_docx: Path, collection: str, output_docx: Path, failure: Path, corrections: Path, style_id: str | None, locale: str | None) -> None:
+    tag_manuscript(input_docx, collection, output_docx, failure, corrections, style_id, locale)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,12 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
     import_refs_parser.add_argument("--refs", required=True, type=Path)
     import_refs_parser.add_argument("--collection", required=True)
     import_refs_parser.add_argument("--failure", type=Path)
+    import_refs_parser.add_argument("--corrections", type=Path)
 
     tag_parser = sub.add_parser("tag-manuscript", help="Import manuscript references and replace plain-text numeric citations with Zotero fields")
     tag_parser.add_argument("--input", required=True, type=Path)
     tag_parser.add_argument("--collection", required=True)
     tag_parser.add_argument("--output", type=Path)
     tag_parser.add_argument("--failure", type=Path)
+    tag_parser.add_argument("--corrections", type=Path)
     tag_parser.add_argument("--style-id")
     tag_parser.add_argument("--locale")
 
@@ -72,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--collection", required=True)
     sync_parser.add_argument("--output", type=Path)
     sync_parser.add_argument("--failure", type=Path)
+    sync_parser.add_argument("--corrections", type=Path)
     sync_parser.add_argument("--style-id")
     sync_parser.add_argument("--locale")
 
@@ -83,19 +95,22 @@ def main() -> None:
 
     if args.command == "import-refs":
         failure = args.failure or _default_failure_path(args.refs)
-        import_refs(args.refs, args.collection, failure)
+        corrections = args.corrections or _default_correction_path(args.refs)
+        import_refs(args.refs, args.collection, failure, corrections)
         return
 
     if args.command == "tag-manuscript":
         output = args.output or _default_output_docx(args.input, "zotero")
         failure = args.failure or _default_failure_path(args.input)
-        tag_manuscript(args.input, args.collection, output, failure, args.style_id, args.locale)
+        corrections = args.corrections or _default_correction_path(args.input)
+        tag_manuscript(args.input, args.collection, output, failure, corrections, args.style_id, args.locale)
         return
 
     if args.command == "sync-manuscript":
         output = args.output or _default_output_docx(args.input, "zotero_synced")
         failure = args.failure or _default_failure_path(args.input)
-        sync_manuscript(args.input, args.collection, output, failure, args.style_id, args.locale)
+        corrections = args.corrections or _default_correction_path(args.input)
+        sync_manuscript(args.input, args.collection, output, failure, corrections, args.style_id, args.locale)
         return
 
 

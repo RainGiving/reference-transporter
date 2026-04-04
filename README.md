@@ -5,7 +5,7 @@ Language: **English** | [简体中文](./README.zh-CN.md)
 [![Skill](https://img.shields.io/badge/skill-reference--transporter-0A66C2)](./SKILL.md)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB)](./pyproject.toml)
 [![Zotero](https://img.shields.io/badge/zotero-local%20api%20%2B%20connector-CC2936)](https://www.zotero.org/)
-[![GROBID](https://img.shields.io/badge/grobid-required-4B8BBE)](https://github.com/kermitt2/grobid)
+[![Metadata](https://img.shields.io/badge/metadata-crossref%20%2B%20openalex%20%2B%20dblp%20%2B%20pubmed-4B8BBE)](./references/workflow.md)
 [![Status](https://img.shields.io/badge/status-active-2EA44F)](./references/workflow.md)
 
 Reference Transporter imports references into Zotero and converts visible numeric citations in DOCX manuscripts into Zotero Word fields.
@@ -60,7 +60,11 @@ Use $reference-transporter to resync Zotero citation fields in /abs/path/revised
 - Zotero local API and connector available:
   - `http://127.0.0.1:23119/api`
   - `http://127.0.0.1:23119/connector`
-- A local GROBID service at `http://127.0.0.1:8070`
+- Network access to:
+  - Crossref
+  - OpenAlex
+  - DBLP
+  - PubMed
 - Python 3.11+
 - Python packages:
   - `requests`
@@ -75,13 +79,13 @@ python -m pip install requests lxml python-docx
 
 ## Features
 
-- GROBID-first parsing for reference strings
 - Identifier-first metadata resolution:
   - DOI
   - PMID
   - arXiv ID
   - ISBN
   - URL metadata
+- Query remote metadata sources directly from the raw reference string
 - Multi-source academic metadata lookup:
   - Journal articles: Crossref -> PubMed -> OpenAlex
   - Conference papers: DBLP -> Crossref -> OpenAlex
@@ -90,6 +94,7 @@ python -m pip install requests lxml python-docx
 - Confidence-gated auto-import
 - `failure_ref.txt` output for references without a high-confidence metadata match
 - Run-level DOCX citation replacement that preserves superscript formatting
+- Reference section headings can be Chinese or English, including `参考文献`, `Reference`, `References`, and `Bibliography`
 - Style inheritance by default:
   - inherit from the input DOCX if Zotero document properties already exist
   - otherwise inherit from the current local Zotero style settings

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 import json
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -12,7 +13,6 @@ import requests
 from docx import Document
 from lxml import etree
 
-from .grobid import GrobidClient, GrobidParsedReference
 from .metadata_resolver import MetadataResolution, MetadataResolver, extract_identifiers
 from .utils import clean_whitespace, normalize_doi, random_id
 from .word import WordZoteroInjector
@@ -23,8 +23,18 @@ CP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/custom-properties
 VT_NS = "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
 
 CITATION_TOKEN_RE = re.compile(r"\[([1-9]\d*(?:\s*[-–,，]\s*[1-9]\d*)*)\]")
-REFERENCE_RE = re.compile(r"^\[([1-9]\d*)\]\s*(.+?)\s*$")
+REFERENCE_RE = re.compile(
+    r"^(?:\[(?P<bracket>[1-9]\d*)\]|\((?P<paren>[1-9]\d*)\)|(?P<plain>[1-9]\d*)(?:[\].)、．。)]|(?=\s)))[\s\xa0]*(?P<body>.+?)\s*$"
+)
 TITLE_NORMALIZER_RE = re.compile(r"[^a-z0-9]+")
+REFERENCE_HEADINGS = {
+    "参考文献",
+    "reference",
+    "references",
+    "bibliography",
+    "works cited",
+    "literature cited",
+}
 
 
 @dataclass(slots=True)
@@ -45,6 +55,11 @@ class ParsedReference:
     failure_reason: str | None = None
     created_new_item: bool = False
     parser_source: str = "fallback"
+    corrected_from_item_key: str | None = None
+    corrected_to_item_key: str | None = None
+    corrected_action: str | None = None
+    corrected_from_item_type: str | None = None
+    corrected_to_item_type: str | None = None
 
 
 def normalize_title(value: str) -> str:
@@ -52,14 +67,21 @@ def normalize_title(value: str) -> str:
 
 
 def normalize_heading(value: str) -> str:
-    return value.replace("\u200b", "").replace("\xa0", " ").strip()
+    value = clean_whitespace(value.replace("\u200b", "").replace("\xa0", " "))
+    value = re.sub(r"[：:]+$", "", value)
+    return value
+
+
+def is_reference_heading(value: str) -> bool:
+    normalized = normalize_heading(value)
+    return normalized in REFERENCE_HEADINGS or normalized.casefold() in REFERENCE_HEADINGS
 
 
 def find_reference_heading_index(doc: Document) -> int:
     for index, para in enumerate(doc.paragraphs):
-        if normalize_heading(para.text) == "参考文献":
+        if is_reference_heading(para.text):
             return index
-    raise ValueError("Could not find '参考文献' heading in document")
+    raise ValueError("Could not find a reference heading in document")
 
 
 def expand_citation_numbers(token: str) -> list[int]:
@@ -80,6 +102,25 @@ def expand_citation_numbers(token: str) -> list[int]:
     return values
 
 
+def split_reference_entry(value: str) -> tuple[int, str] | None:
+    match = REFERENCE_RE.match(normalize_heading(value))
+    if not match:
+        return None
+    number = next(int(part) for part in match.group("bracket", "paren", "plain") if part)
+    body = clean_whitespace(match.group("body"))
+    if not body:
+        return None
+    return number, body
+
+
+def normalize_reference_entry(value: str) -> str | None:
+    parsed = split_reference_entry(value)
+    if not parsed:
+        return None
+    number, body = parsed
+    return f"[{number}] {body}"
+
+
 def extract_reference_paragraphs(docx_path: str | Path) -> list[str]:
     doc = Document(str(docx_path))
     start = find_reference_heading_index(doc) + 1
@@ -88,8 +129,9 @@ def extract_reference_paragraphs(docx_path: str | Path) -> list[str]:
         text = normalize_heading(para.text)
         if not text:
             continue
-        if REFERENCE_RE.match(text):
-            refs.append(text)
+        normalized = normalize_reference_entry(text)
+        if normalized:
+            refs.append(normalized)
     return refs
 
 
@@ -101,14 +143,14 @@ def load_references_from_text(path: str | Path) -> list[str]:
 
     if len(raw_blocks) == 1:
         lines = [normalize_heading(line) for line in content.splitlines() if normalize_heading(line)]
-        if all(REFERENCE_RE.match(line) for line in lines):
-            return lines
-        if all(not REFERENCE_RE.match(line) for line in lines):
+        if all(split_reference_entry(line) for line in lines):
+            return [normalize_reference_entry(line) for line in lines if normalize_reference_entry(line)]
+        if all(not split_reference_entry(line) for line in lines):
             return [f"[{idx}] {line}" for idx, line in enumerate(lines, start=1)]
 
     normalized = []
     for idx, block in enumerate(raw_blocks, start=1):
-        normalized.append(block if REFERENCE_RE.match(block) else f"[{idx}] {block}")
+        normalized.append(normalize_reference_entry(block) or f"[{idx}] {block}")
     return normalized
 
 
@@ -218,27 +260,27 @@ def resolve_style_preferences(input_docx: str | Path, style_id: str | None = Non
 
 
 def parse_reference(raw_reference: str) -> ParsedReference:
-    outer = REFERENCE_RE.match(normalize_heading(raw_reference))
-    if not outer:
+    parsed_entry = split_reference_entry(raw_reference)
+    if not parsed_entry:
         raise ValueError(f"Invalid reference paragraph: {raw_reference}")
-    number = int(outer.group(1))
-    body = outer.group(2).strip()
+    number, body = parsed_entry
     body = body.replace("\xa0", " ")
     fallback = minimal_reference_seed(body)
     return ParsedReference(
         number=number,
-        raw=raw_reference,
+        raw=f"[{number}] {body}",
         body=body,
         authors_raw=fallback["authors_raw"],
         title=fallback["title"],
         item_type=fallback["item_type"],
         creators=fallback["creators"],
         fields=fallback["fields"],
-        parser_source="fallback",
+        parser_source="raw",
     )
 
 def minimal_reference_seed(body: str) -> dict:
     identifiers = extract_identifiers(body)
+    upper_body = body.upper()
     fields: dict = {}
     if identifiers.doi:
         fields["DOI"] = identifiers.doi
@@ -254,13 +296,24 @@ def minimal_reference_seed(body: str) -> dict:
     if years:
         fields["date"] = years[-1]
 
-    item_type = "unknown"
+    item_type = "document"
     if identifiers.arxiv_id:
         item_type = "preprint"
-    elif identifiers.isbn:
+    elif identifiers.isbn or "[M]" in upper_body:
         item_type = "book"
     elif identifiers.url and not identifiers.doi:
         item_type = "webpage"
+    elif "[J]" in upper_body or "JOURNAL" in upper_body:
+        item_type = "journalArticle"
+    elif "[C]" in upper_body or (
+        "//" in body
+        and any(keyword in upper_body for keyword in {"PROCEEDINGS", "CONFERENCE", "SYMPOSIUM", "WORKSHOP", "CONGRESS"})
+    ):
+        item_type = "conferencePaper"
+    elif "[D]" in upper_body:
+        item_type = "thesis"
+    elif "[R]" in upper_body:
+        item_type = "report"
 
     return {
         "authors_raw": "",
@@ -294,28 +347,6 @@ def item_completeness_score(item_data: dict) -> float:
     creators = item_data.get("creators", [])
     score += min(len(creators), 8) * 0.35
     return score
-
-
-def _apply_grobid_parse(reference: ParsedReference, parsed: GrobidParsedReference | None) -> None:
-    if not parsed:
-        return
-    reference.title = parsed.title or reference.title
-    reference.creators = parsed.creators or reference.creators
-    reference.authors_raw = ", ".join(
-        clean_whitespace(" ".join(x for x in [creator.get("lastName", ""), creator.get("firstName", "")] if x) or creator.get("name", ""))
-        for creator in (parsed.creators or [])
-    ).strip(", ")
-    if parsed.fields:
-        merged_fields = dict(reference.fields)
-        for key, value in parsed.fields.items():
-            if value not in (None, "", []):
-                merged_fields[key] = value
-        reference.fields = merged_fields
-    if parsed.item_type:
-        reference.item_type = parsed.item_type
-    reference.fields["title"] = reference.title
-    reference.parser_source = "grobid"
-
 
 def build_item_payload(parsed: ParsedReference, resolved: MetadataResolution | None) -> dict:
     item = to_connector_item(parsed)
@@ -426,6 +457,17 @@ class ZoteroLocalCollection:
         data = response.json()
         return data[0] if isinstance(data, list) else data
 
+    def patch_item(self, item_key: str, version: int, patch: dict) -> None:
+        response = self.session.patch(
+            f"{self.api_base_url}/users/0/items/{item_key}",
+            json=patch,
+            headers={"If-Unmodified-Since-Version": str(version)},
+            timeout=30,
+        )
+        if response.status_code in {400, 501}:
+            raise NotImplementedError("Zotero local API does not support item updates in this environment")
+        response.raise_for_status()
+
     @staticmethod
     def build_item_uri(item_key: str) -> str:
         return f"http://zotero.org/users/0/items/{item_key}"
@@ -451,16 +493,161 @@ def find_matching_item(parsed: ParsedReference, collection_items: Iterable[dict]
 def find_best_existing_item(candidate_item: dict, collection_items: Iterable[dict]) -> dict | None:
     doi = normalize_doi(candidate_item.get("DOI"))
     title = normalize_title(candidate_item.get("title", ""))
+    target_type = clean_whitespace(candidate_item.get("itemType", ""))
+    doi_matches: list[dict] = []
     exact_title_matches: list[dict] = []
     for item in collection_items:
         data = item["data"]
         if doi and normalize_doi(data.get("DOI")) == doi:
-            return item
+            doi_matches.append(item)
         if title and normalize_title(data.get("title", "")) == title:
             exact_title_matches.append(item)
+    if doi_matches:
+        def doi_match_score(item: dict) -> tuple[float, float]:
+            data = item["data"]
+            type_bonus = 0.6 if clean_whitespace(data.get("itemType", "")) == target_type else 0.0
+            title_bonus = 0.25 if title and normalize_title(data.get("title", "")) == title else 0.0
+            return (item_completeness_score(data) + type_bonus + title_bonus, float(data.get("version", 0)))
+
+        return max(doi_matches, key=doi_match_score)
     if not exact_title_matches:
         return None
     return max(exact_title_matches, key=lambda x: item_completeness_score(x["data"]))
+
+
+SYNC_FIELDS_BY_TYPE = {
+    "journalArticle": {
+        "title",
+        "creators",
+        "date",
+        "DOI",
+        "url",
+        "publicationTitle",
+        "journalAbbreviation",
+        "volume",
+        "issue",
+        "pages",
+        "extra",
+    },
+    "conferencePaper": {
+        "title",
+        "creators",
+        "date",
+        "DOI",
+        "url",
+        "proceedingsTitle",
+        "conferenceName",
+        "place",
+        "volume",
+        "pages",
+        "extra",
+    },
+    "preprint": {
+        "title",
+        "creators",
+        "date",
+        "DOI",
+        "url",
+        "archiveID",
+        "repository",
+        "extra",
+    },
+    "webpage": {
+        "title",
+        "creators",
+        "date",
+        "DOI",
+        "url",
+        "websiteTitle",
+        "extra",
+    },
+    "book": {
+        "title",
+        "creators",
+        "date",
+        "DOI",
+        "url",
+        "publisher",
+        "place",
+        "ISBN",
+        "extra",
+    },
+    "thesis": {"title", "creators", "date", "DOI", "url", "publisher", "place", "extra"},
+    "report": {"title", "creators", "date", "DOI", "url", "publisher", "place", "extra"},
+}
+
+SYNC_CLEAR_FIELDS = {
+    "ISBN",
+    "publicationTitle",
+    "journalAbbreviation",
+    "volume",
+    "issue",
+    "pages",
+    "proceedingsTitle",
+    "conferenceName",
+    "place",
+    "publisher",
+    "archiveID",
+    "repository",
+    "websiteTitle",
+    "extra",
+}
+
+
+def _normalize_sync_value(value):
+    if isinstance(value, list):
+        normalized = []
+        for item in value:
+            if isinstance(item, dict):
+                normalized.append(
+                    (
+                        clean_whitespace(item.get("creatorType", "")),
+                        clean_whitespace(item.get("firstName", "")),
+                        clean_whitespace(item.get("lastName", "")),
+                        clean_whitespace(item.get("name", "")),
+                    )
+                )
+            else:
+                normalized.append(clean_whitespace(str(item)))
+        return normalized
+    if value is None:
+        return ""
+    return clean_whitespace(str(value))
+
+
+def build_item_update_patch(existing_data: dict, candidate_item: dict) -> dict | None:
+    existing_doi = normalize_doi(existing_data.get("DOI"))
+    candidate_doi = normalize_doi(candidate_item.get("DOI"))
+    if not candidate_doi or existing_doi != candidate_doi:
+        return None
+
+    target_type = candidate_item.get("itemType") or existing_data.get("itemType") or "document"
+    allowed_fields = SYNC_FIELDS_BY_TYPE.get(target_type, {"title", "creators", "date", "DOI", "url", "extra"})
+
+    patch: dict = {}
+    if clean_whitespace(existing_data.get("itemType", "")) != clean_whitespace(target_type):
+        patch["itemType"] = target_type
+
+    for field in allowed_fields:
+        candidate_value = candidate_item.get(field)
+        if field == "creators":
+            candidate_value = candidate_item.get("creators", [])
+        elif candidate_value is None:
+            continue
+        if _normalize_sync_value(existing_data.get(field)) != _normalize_sync_value(candidate_value):
+            patch[field] = candidate_value
+
+    for field in SYNC_CLEAR_FIELDS - allowed_fields:
+        existing_value = existing_data.get(field)
+        if field == "creators":
+            continue
+        if _normalize_sync_value(existing_value):
+            patch[field] = ""
+
+    if "extra" not in candidate_item and _normalize_sync_value(existing_data.get("extra")):
+        patch["extra"] = ""
+
+    return patch or None
 
 
 def should_reuse_existing_item(existing_item: dict, candidate_item: dict, resolved: MetadataResolution | None) -> bool:
@@ -484,7 +671,6 @@ def import_references_to_collection(
     connector = ZoteroConnectorClient(connector_base_url)
     local = ZoteroLocalCollection(api_base_url)
     resolver = MetadataResolver()
-    grobid = GrobidClient()
     collection_key = local.resolve_collection_key(collection_name)
     selected = connector.get_selected_collection()
     target_id = None
@@ -499,15 +685,6 @@ def import_references_to_collection(
         raise RuntimeError(f"Could not resolve connector target for collection '{collection_name}'")
 
     collection_items = local.list_collection_items(collection_key)
-    grobid_results = grobid.parse_many([reference.body for reference in references])
-    if not grobid_results or all(result is None for result in grobid_results):
-        raise RuntimeError(
-            "GROBID parsing is required for this workflow, but no references were parsed. "
-            "Start a local GROBID service and retry."
-        )
-    for reference, grobid_result in zip(references, grobid_results):
-        _apply_grobid_parse(reference, grobid_result)
-
     for parsed in references:
         resolution, failure_reason = resolver.resolve(parsed)
         parsed.failure_reason = failure_reason
@@ -520,10 +697,26 @@ def import_references_to_collection(
             parsed.resolution_source = None
             parsed.resolution_score = None
             parsed.used_fallback = True
-            parsed.confidence = "fallback-parsed"
+            parsed.confidence = "unresolved"
+            continue
 
         candidate_item = build_item_payload(parsed, resolution)
         match = find_best_existing_item(candidate_item, collection_items)
+        if match:
+            patch = build_item_update_patch(match["data"], candidate_item)
+            if patch:
+                parsed.corrected_from_item_key = match["key"]
+                parsed.corrected_from_item_type = clean_whitespace(match["data"].get("itemType", ""))
+                parsed.corrected_to_item_type = clean_whitespace(candidate_item.get("itemType", ""))
+                try:
+                    local.patch_item(match["key"], match["data"]["version"], patch)
+                    collection_items = local.list_collection_items(collection_key)
+                    match = find_best_existing_item(candidate_item, collection_items) or match
+                    parsed.corrected_to_item_key = match["key"]
+                    parsed.corrected_action = "updated"
+                except NotImplementedError:
+                    # Fall back to creating a corrected replacement item and cite that item instead.
+                    match = None
         if match and should_reuse_existing_item(match, candidate_item, resolution):
             parsed.item_key = match["key"]
             parsed.created_new_item = False
@@ -541,6 +734,9 @@ def import_references_to_collection(
             if match:
                 parsed.item_key = match["key"]
                 parsed.created_new_item = True
+                if parsed.corrected_from_item_key and parsed.corrected_action is None:
+                    parsed.corrected_to_item_key = match["key"]
+                    parsed.corrected_action = "replaced"
                 break
         if not parsed.item_key:
             raise RuntimeError(f"Imported item not found in collection after save: {parsed.title}")
@@ -701,8 +897,11 @@ def _replace_citations_in_paragraph(para, reference_map: dict[int, ParsedReferen
         for number in expand_citation_numbers(token):
             parsed = reference_map[number]
             if not parsed.item_key:
-                raise RuntimeError(f"Reference [{number}] has no Zotero item key")
+                item_keys = []
+                break
             item_keys.append(parsed.item_key)
+        if not item_keys:
+            continue
 
         code_payload, _ = build_citation_code(local, item_keys)
         field_code = f" ADDIN ZOTERO_ITEM CSL_CITATION {code_payload} "
@@ -775,7 +974,7 @@ def replace_document_citations(
     stop_at = None
     for para in paragraphs:
         para_text = "".join(para.xpath(".//w:t/text()", namespaces={"w": W_NS}))
-        if normalize_heading(para_text) == "参考文献":
+        if is_reference_heading(para_text):
             stop_at = para
             break
 
@@ -797,7 +996,6 @@ def replace_document_citations(
 
 def write_failure_refs(references: list[ParsedReference], path: str | Path) -> None:
     output = Path(path)
-    output.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for ref in references:
         if not ref.used_fallback:
@@ -811,4 +1009,34 @@ def write_failure_refs(references: list[ParsedReference], path: str | Path) -> N
                 "",
             ]
         )
+    if not lines:
+        if output.exists():
+            output.unlink()
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_correction_map(references: list[ParsedReference], path: str | Path) -> None:
+    output = Path(path)
+    lines = []
+    for ref in references:
+        if not ref.corrected_from_item_key or not ref.corrected_to_item_key or not ref.corrected_action:
+            continue
+        lines.extend(
+            [
+                f"[{ref.number}]",
+                f"title: {ref.title}",
+                f"doi: {ref.fields.get('DOI', 'N/A')}",
+                f"action: {ref.corrected_action}",
+                f"old_item: {ref.corrected_from_item_key} ({ref.corrected_from_item_type or 'unknown'})",
+                f"new_item: {ref.corrected_to_item_key} ({ref.corrected_to_item_type or 'unknown'})",
+                "",
+            ]
+        )
+    if not lines:
+        if output.exists():
+            output.unlink()
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines), encoding="utf-8")

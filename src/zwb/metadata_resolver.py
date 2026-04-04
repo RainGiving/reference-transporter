@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -15,8 +16,12 @@ DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.I)
 PMID_RE = re.compile(r"\bPMID[:\s]*([0-9]{5,9})\b", re.I)
 ARXIV_RE = re.compile(r"(?:arxiv[:/\s]+)(\d{4}\.\d{4,5}(?:v\d+)?)\b", re.I)
 ISBN_RE = re.compile(r"\b(?:97[89][- ]?)?\d(?:[- ]?\d){8,16}\b")
+ISBN_CONTEXT_RE = re.compile(r"\bISBN(?:-1[03])?\b|international standard book number", re.I)
+BOOK_TAG_RE = re.compile(r"\[(?:M|BOOK)\]", re.I)
 URL_RE = re.compile(r"https?://[^\s>]+", re.I)
 TITLE_NORMALIZER_RE = re.compile(r"[^a-z0-9]+")
+REFERENCE_NUMBER_RE = re.compile(r"^\s*\[\d+\]\s*")
+REFERENCE_TAG_RE = re.compile(r"\[(?:[A-Z]|[A-Z]{1,3}/[A-Z]{1,3})+\]", re.I)
 HIGH_CONFIDENCE_THRESHOLD = 1.15
 
 
@@ -48,11 +53,139 @@ def strip_markup(value: str) -> str:
     return clean_whitespace(text)
 
 
+def _reference_tokens(value: str | None) -> set[str]:
+    return set(re.findall(r"[a-z0-9]{2,}", clean_whitespace(value).lower()))
+
+
+def _token_overlap(query: str | None, reference: str | None) -> float:
+    query_tokens = _reference_tokens(query)
+    reference_tokens = _reference_tokens(reference)
+    if not query_tokens or not reference_tokens:
+        return 0.0
+    return len(query_tokens & reference_tokens) / len(query_tokens)
+
+
+def _normalize_reference_query(raw_reference: str | None) -> str:
+    value = clean_whitespace(raw_reference)
+    if not value:
+        return ""
+    value = REFERENCE_NUMBER_RE.sub("", value)
+    value = URL_RE.sub(" ", value)
+    value = DOI_RE.sub(" ", value)
+    value = PMID_RE.sub(" ", value)
+    value = REFERENCE_TAG_RE.sub(" ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value[:240].strip()
+
+
+def _isbn10_is_valid(value: str) -> bool:
+    if len(value) != 10:
+        return False
+    total = 0
+    for index, char in enumerate(value[:9], start=1):
+        if not char.isdigit():
+            return False
+        total += index * int(char)
+    check = value[9]
+    if check in {"X", "x"}:
+        total += 100
+    elif check.isdigit():
+        total += 10 * int(check)
+    else:
+        return False
+    return total % 11 == 0
+
+
+def _isbn13_is_valid(value: str) -> bool:
+    if len(value) != 13 or not value.isdigit():
+        return False
+    total = 0
+    for index, char in enumerate(value[:12]):
+        total += int(char) * (1 if index % 2 == 0 else 3)
+    check = (10 - (total % 10)) % 10
+    return check == int(value[12])
+
+
+def _extract_isbn(raw_reference: str) -> str | None:
+    for match in ISBN_RE.finditer(raw_reference):
+        digits = re.sub(r"[^0-9Xx]", "", match.group(0)).upper()
+        if len(digits) == 10:
+            valid = _isbn10_is_valid(digits)
+        elif len(digits) == 13:
+            valid = _isbn13_is_valid(digits)
+        else:
+            valid = False
+        if not valid:
+            continue
+
+        window = raw_reference[max(0, match.start() - 48) : min(len(raw_reference), match.end() + 48)]
+        if ISBN_CONTEXT_RE.search(window) or BOOK_TAG_RE.search(raw_reference):
+            return digits
+    return None
+
+
+def _extract_title_signal(raw_reference: str | None) -> str:
+    value = clean_whitespace(raw_reference)
+    if not value:
+        return ""
+    value = REFERENCE_NUMBER_RE.sub("", value)
+    value = URL_RE.sub(" ", value)
+    value = DOI_RE.sub(" ", value)
+    tag_match = REFERENCE_TAG_RE.search(value)
+    if tag_match:
+        left = value[: tag_match.start()]
+    else:
+        left = value.split("//", 1)[0]
+    left = REFERENCE_TAG_RE.sub(" ", left)
+    segments = [clean_whitespace(seg) for seg in re.split(r"\.\s+", left) if clean_whitespace(seg)]
+    if not segments:
+        return ""
+    candidates = [seg for seg in segments if len(re.findall(r"[A-Za-z]{2,}", seg)) >= 3]
+    if not candidates:
+        candidates = segments
+    title = candidates[-1]
+    title = re.sub(r"^[^A-Za-z0-9]+", "", title)
+    return title[:220].strip(" .;,:")
+
+
+def _structured_title(parsed) -> str:
+    explicit_title = clean_whitespace(getattr(parsed, "title", ""))
+    body = clean_whitespace(getattr(parsed, "body", "") or getattr(parsed, "raw", ""))
+    if explicit_title and explicit_title != body:
+        return explicit_title
+    return _extract_title_signal(body)
+
+
+def _raw_reference_score(parsed, title: str, year: str | int | None, authors: list[str], container: str = "") -> float:
+    raw_reference = clean_whitespace(getattr(parsed, "body", "") or getattr(parsed, "raw", ""))
+    if not raw_reference:
+        return 0.0
+
+    score = 0.0
+    if title:
+        score += 0.75 * _token_overlap(title, raw_reference)
+    if container:
+        score += 0.2 * _token_overlap(container, raw_reference)
+    if year and str(year) in raw_reference:
+        score += 0.2
+
+    if authors:
+        raw_tokens = _reference_tokens(raw_reference)
+        author_tokens = []
+        for author in authors[:4]:
+            parts = re.findall(r"[A-Za-z]{2,}", clean_whitespace(author).lower())
+            if parts:
+                author_tokens.append(parts[-1])
+        if author_tokens:
+            matches = sum(1 for token in author_tokens if token in raw_tokens)
+            score += 0.25 * (matches / len(author_tokens))
+    return score
+
+
 def extract_identifiers(raw_reference: str) -> MetadataIdentifiers:
     doi_match = DOI_RE.search(raw_reference)
     pmid_match = PMID_RE.search(raw_reference)
     arxiv_match = ARXIV_RE.search(raw_reference)
-    isbn_match = ISBN_RE.search(raw_reference)
     url_match = URL_RE.search(raw_reference)
 
     url = url_match.group(0).rstrip(".,;") if url_match else None
@@ -61,11 +194,7 @@ def extract_identifiers(raw_reference: str) -> MetadataIdentifiers:
     arxiv_id = None
     if arxiv_match:
         arxiv_id = (arxiv_match.group(1) or arxiv_match.group(2) or "").strip()
-    isbn = None
-    if isbn_match:
-        digits = re.sub(r"[^0-9Xx]", "", isbn_match.group(0))
-        if len(digits) in {10, 13}:
-            isbn = digits.upper()
+    isbn = _extract_isbn(raw_reference)
 
     if url and not doi:
         parsed = urlparse(url)
@@ -101,11 +230,10 @@ def _first_author_last_name(creators: list[dict[str, Any]]) -> str:
 
 
 def _score_candidate(parsed, title: str, year: str | int | None, authors: list[str], container: str = "") -> float:
-    score = 0.0
-    title_score = 0.0
-    if title:
-        title_score = 1.0 * _ratio(normalize_title(parsed.title), normalize_title(title))
-        score += title_score
+    score = _raw_reference_score(parsed, title, year, authors, container)
+    structured_title = _structured_title(parsed)
+    if title and structured_title:
+        score += 0.7 * _ratio(normalize_title(structured_title), normalize_title(title))
     parsed_year = str(parsed.fields.get("date", "")).strip()
     if parsed_year and year and str(year) == parsed_year:
         score += 0.2
@@ -121,12 +249,16 @@ def _score_candidate(parsed, title: str, year: str | int | None, authors: list[s
 
 
 def _search_query(parsed) -> str:
+    normalized_raw = _normalize_reference_query(getattr(parsed, "body", "") or getattr(parsed, "raw", ""))
+    if normalized_raw and not _structured_title(parsed):
+        return normalized_raw
+
     pieces = []
-    title = clean_whitespace(parsed.title or "")
+    title = _structured_title(parsed)
     if title:
         pieces.append(title)
-    elif getattr(parsed, "body", ""):
-        pieces.append(clean_whitespace(parsed.body))
+    elif normalized_raw:
+        pieces.append(normalized_raw)
     first_author = _first_author_last_name(parsed.creators)
     if first_author:
         pieces.append(first_author)
@@ -160,6 +292,27 @@ class MetadataResolver:
         self.mailto = mailto
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "zotero-word-bridge/0.2"})
+
+    def _get(self, url: str, *, timeout: int = 20, **kwargs):
+        last_error = None
+        for attempt in range(4):
+            try:
+                response = self.session.get(url, timeout=timeout, **kwargs)
+                if response.status_code == 429 or response.status_code >= 500:
+                    if attempt < 3:
+                        retry_after = clean_whitespace(response.headers.get("Retry-After", ""))
+                        delay = float(retry_after) if retry_after.isdigit() else 1.5 * (attempt + 1)
+                        time.sleep(delay)
+                        continue
+                response.raise_for_status()
+                return response
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt >= 3:
+                    raise
+                time.sleep(1.5 * (attempt + 1))
+        if last_error:
+            raise last_error
 
     def resolve(self, parsed) -> tuple[MetadataResolution | None, str | None]:
         parsed.item_type = _normalize_item_type(getattr(parsed, "item_type", None))
@@ -246,8 +399,7 @@ class MetadataResolver:
         return None, f"no metadata source produced a high-confidence match; attempted: {', '.join(attempted)}"
 
     def _crossref_by_doi(self, parsed, ids: MetadataIdentifiers) -> MetadataResolution | None:
-        response = self.session.get(f"https://api.crossref.org/works/{ids.doi}", timeout=20)
-        response.raise_for_status()
+        response = self._get(f"https://api.crossref.org/works/{ids.doi}", timeout=20)
         message = response.json()["message"]
         item = self._crossref_to_item(message, parsed.item_type)
         score = _score_candidate(parsed, item.get("title", ""), item.get("date"), self._creator_names(item), item.get("publicationTitle") or item.get("proceedingsTitle") or "")
@@ -255,12 +407,11 @@ class MetadataResolver:
 
     def _crossref_search(self, parsed) -> MetadataResolution | None:
         query = _search_query(parsed)
-        response = self.session.get(
+        response = self._get(
             "https://api.crossref.org/works",
             params={"query.bibliographic": query, "rows": 8, "mailto": self.mailto},
             timeout=20,
         )
-        response.raise_for_status()
         best: MetadataResolution | None = None
         for message in response.json().get("message", {}).get("items", []):
             item = self._crossref_to_item(message, parsed.item_type)
@@ -282,13 +433,15 @@ class MetadataResolver:
         return MetadataResolution(source="pubmed-pmid", score=max(score, 1.5), item=item, identifiers=ids)
 
     def _pubmed_search(self, parsed) -> MetadataResolution | None:
-        term = f'{clean_whitespace(parsed.title or parsed.body)}[Title]'
-        response = self.session.get(
+        title = _structured_title(parsed)
+        if not title:
+            return None
+        term = f"{title}[Title]"
+        response = self._get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
             params={"db": "pubmed", "term": term, "retmode": "json", "retmax": 5},
             timeout=20,
         )
-        response.raise_for_status()
         ids = response.json().get("esearchresult", {}).get("idlist", [])
         best: MetadataResolution | None = None
         for pmid in ids:
@@ -304,12 +457,11 @@ class MetadataResolver:
 
     def _openalex_search(self, parsed) -> MetadataResolution | None:
         query = _search_query(parsed)
-        response = self.session.get(
+        response = self._get(
             "https://api.openalex.org/works",
             params={"search": query, "per-page": 5, "mailto": self.mailto},
             timeout=20,
         )
-        response.raise_for_status()
         best: MetadataResolution | None = None
         for result in response.json().get("results", []):
             item = self._openalex_to_item(result, parsed.item_type)
@@ -324,12 +476,11 @@ class MetadataResolver:
 
     def _dblp_search(self, parsed) -> MetadataResolution | None:
         query = _search_query(parsed)
-        response = self.session.get(
+        response = self._get(
             "https://dblp.org/search/publ/api",
             params={"q": query, "format": "json", "h": 10},
             timeout=20,
         )
-        response.raise_for_status()
         hits = response.json().get("result", {}).get("hits", {}).get("hit", [])
         if isinstance(hits, dict):
             hits = [hits]
@@ -346,8 +497,7 @@ class MetadataResolver:
         return best
 
     def _arxiv_by_id(self, parsed, ids: MetadataIdentifiers) -> MetadataResolution | None:
-        response = self.session.get("http://export.arxiv.org/api/query", params={"id_list": ids.arxiv_id}, timeout=20)
-        response.raise_for_status()
+        response = self._get("http://export.arxiv.org/api/query", params={"id_list": ids.arxiv_id}, timeout=20)
         entry = self._parse_arxiv_entry(response.content)
         if entry is None:
             return None
@@ -356,13 +506,15 @@ class MetadataResolver:
         return MetadataResolution(source="arxiv-id", score=max(score, 1.5), item=item, identifiers=ids)
 
     def _arxiv_search(self, parsed) -> MetadataResolution | None:
-        query = f'ti:\"{parsed.title}\"'
-        response = self.session.get(
+        title = _structured_title(parsed)
+        if not title:
+            return None
+        query = f'ti:\"{title}\"'
+        response = self._get(
             "http://export.arxiv.org/api/query",
             params={"search_query": query, "start": 0, "max_results": 5},
             timeout=20,
         )
-        response.raise_for_status()
         root = etree.fromstring(response.content)
         entries = root.xpath("/*[local-name()='feed']/*[local-name()='entry']")
         best: MetadataResolution | None = None
@@ -375,12 +527,11 @@ class MetadataResolver:
         return best
 
     def _openlibrary_by_isbn(self, parsed, ids: MetadataIdentifiers) -> MetadataResolution | None:
-        response = self.session.get(
+        response = self._get(
             "https://openlibrary.org/api/books",
             params={"bibkeys": f"ISBN:{ids.isbn}", "format": "json", "jscmd": "data"},
             timeout=20,
         )
-        response.raise_for_status()
         data = response.json().get(f"ISBN:{ids.isbn}")
         if not data:
             return None
@@ -399,8 +550,7 @@ class MetadataResolver:
         return MetadataResolution(source="openlibrary-isbn", score=max(score, 1.5), item=item, identifiers=ids)
 
     def _url_metadata(self, parsed, url: str) -> MetadataResolution | None:
-        response = self.session.get(url, timeout=20, headers={"Accept-Language": "en-US,en;q=0.9"})
-        response.raise_for_status()
+        response = self._get(url, timeout=20, headers={"Accept-Language": "en-US,en;q=0.9"})
         doc = lxml_html.fromstring(response.content)
         meta_map: dict[str, list[str]] = {}
         for meta in doc.xpath("//meta[@content]"):
@@ -539,12 +689,11 @@ class MetadataResolver:
         return item
 
     def _pubmed_fetch_article(self, pmid: str):
-        response = self.session.get(
+        response = self._get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
             params={"db": "pubmed", "id": pmid, "retmode": "xml"},
             timeout=20,
         )
-        response.raise_for_status()
         root = etree.fromstring(response.content)
         articles = root.xpath("/*[local-name()='PubmedArticleSet']/*[local-name()='PubmedArticle']")
         return articles[0] if articles else None

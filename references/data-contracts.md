@@ -2,7 +2,7 @@
 
 ## Reference Text File Input
 
-The parser does not assume a specific house style such as GB/T 7714. Structured extraction is delegated to GROBID.
+The parser does not assume a specific house style such as GB/T 7714. Metadata resolution is driven by strong identifiers and remote scholarly search.
 
 Accepted forms:
 
@@ -13,7 +13,16 @@ Accepted forms:
 [2] International Human Genome Sequencing Consortium. Finishing ...
 ```
 
-2. Blank-line separated blocks:
+2. Numbered lines without square brackets are also accepted:
+
+```text
+1. Luscombe N M, Greenbaum D, Gerstein M. What is bioinformatics? ...
+2) International Human Genome Sequencing Consortium. Finishing ...
+3、 Another reference ...
+4 Another reference ...
+```
+
+3. Blank-line separated blocks:
 
 ```text
 [1] Luscombe N M, Greenbaum D, Gerstein M. What is bioinformatics? ...
@@ -21,7 +30,7 @@ Accepted forms:
 [2] International Human Genome Sequencing Consortium. Finishing ...
 ```
 
-3. Unnumbered lines:
+4. Unnumbered lines:
 
 ```text
 Luscombe N M, Greenbaum D, Gerstein M. What is bioinformatics? ...
@@ -32,7 +41,11 @@ When unnumbered, numbering is assigned sequentially.
 
 ## DOCX Input Assumptions
 
-- There is a visible heading `参考文献`
+- There is a visible reference heading such as:
+  - `参考文献`
+  - `Reference`
+  - `References`
+  - `Bibliography`
 - References after that heading are numbered
 - In-text citations are visible numeric tokens such as:
   - `[1]`

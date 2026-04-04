@@ -16,10 +16,14 @@ This skill does not assume that references follow GB/T 7714 or any other single 
 ## Preconditions
 
 - Zotero is running locally
-- A local GROBID service is required
 - Zotero local API and connector are available:
   - `http://127.0.0.1:23119/api`
   - `http://127.0.0.1:23119/connector`
+- Network access is available for metadata search:
+  - Crossref
+  - OpenAlex
+  - DBLP
+  - PubMed
 - Python is available with:
   - `requests`
   - `lxml`
@@ -82,23 +86,29 @@ Do not force a hard-coded citation style unless the user explicitly asks for one
 
 ## Resolution Rules
 
-- Use GROBID as the primary reference parser.
-- Do not rely on `[J]`, `[C]`, `[M]`, `[EB/OL]`, or any GB/T-specific local parsing as the main path.
 - Strong identifiers first:
   - DOI
   - PMID
   - arXiv ID
   - ISBN
   - URL metadata
+- Do not depend on a local full-reference parser as the main path.
+- Use the raw reference string plus extracted identifiers to query remote metadata sources.
+- Search priority:
+  - Crossref
+  - OpenAlex
+  - DBLP
+  - PubMed
 - High-confidence metadata matches are imported automatically.
-- Low-confidence or unresolved references must fall back to parsed text items.
-- Every fallback reference must be appended to `failure_ref.txt`.
+- Low-confidence or unresolved references must be appended to `failure_ref.txt`.
+- Do not fabricate structured author/title fields from local pattern parsing alone.
 
 ## DOCX Rules
 
 - Replace citations at run level, not by rewriting whole paragraphs.
 - Preserve superscript formatting whenever possible.
 - For revised manuscripts, strip existing Zotero citation fields back to visible numeric text before rebuilding.
+- Recognize reference section headings in both Chinese and English, including `参考文献`, `Reference`, `References`, and `Bibliography`.
 
 ## References
 

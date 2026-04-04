@@ -4,23 +4,25 @@
 
 1. Read the plain-text reference file.
 2. Split references into normalized blocks.
-3. Parse each reference with GROBID as the primary parser.
-4. Extract identifiers:
+3. Extract strong identifiers and query signals from each raw reference string, such as:
    - DOI
    - PMID
    - arXiv ID
    - ISBN
    - URL
-5. Resolve metadata with source-specific priority.
-6. Accept only high-confidence matches.
-7. Fallback to a minimal raw-reference item if no high-confidence source exists.
-8. Import into the requested Zotero collection.
-9. Write `failure_ref.txt`.
+4. Resolve metadata with source-specific priority:
+   - Crossref
+   - OpenAlex
+   - DBLP
+   - PubMed
+5. Accept only high-confidence matches.
+6. Import matched references into the requested Zotero collection.
+7. Write `failure_ref.txt` for low-confidence or unresolved references.
 
 ## 2. tag-manuscript
 
 1. Read the DOCX manuscript.
-2. Find the `参考文献` heading.
+2. Find a reference heading such as `参考文献`, `Reference`, `References`, or `Bibliography`.
 3. Extract numbered references after that heading.
 4. Run the same import pipeline as `import-refs`.
 5. Replace in-text numeric citations such as `[1]`, `[4,5]`, `[8-10]` with Zotero fields.
